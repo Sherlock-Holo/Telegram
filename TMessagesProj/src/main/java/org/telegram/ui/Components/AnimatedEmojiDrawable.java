@@ -661,7 +661,10 @@ public class AnimatedEmojiDrawable extends Drawable {
             mediaFilter = filter;
         }
         if (cacheType == CACHE_TYPE_STANDARD_EMOJI || cacheType == CACHE_TYPE_ALERT_STANDARD_EMOJI) {
-            Drawable emojiDrawable = Emoji.getEmojiDrawable(MessageObject.findAnimatedEmojiEmoticon(document, null));
+            // Fork: CACHE_TYPE_ALERT_STANDARD_EMOJI is only used by call/verification UIs (VoIPFragment, GroupCallActivity)
+            // and must always show the built-in emoji; CACHE_TYPE_STANDARD_EMOJI (restricted emoji in chats) follows the chosen pack.
+            final String thumbEmoticon = MessageObject.findAnimatedEmojiEmoticon(document, null);
+            Drawable emojiDrawable = cacheType == CACHE_TYPE_ALERT_STANDARD_EMOJI ? Emoji.getOfficialEmojiDrawable(thumbEmoticon) : Emoji.getEmojiDrawable(thumbEmoticon);
             if (emojiDrawable != null) {
                 thumbDrawable = emojiDrawable;
             }

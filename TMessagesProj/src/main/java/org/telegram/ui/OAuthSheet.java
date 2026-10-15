@@ -636,7 +636,7 @@ public class OAuthSheet {
             final FrameLayout buttonLayout = new FrameLayout(context);
             ThemeBind.fillBackground(buttonLayout, Theme.createCircleDrawable(dp(70), Theme.multAlpha(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider), 0.05f)), ThemeBind.multAlpha(Theme.key_windowBackgroundWhiteBlackText, 0.05f), resourcesProvider);
 
-            Drawable thumb = Emoji.getEmojiBigDrawable(code);
+            Drawable thumb = Emoji.getOfficialEmojiBigDrawable(code);
             if (thumb == null) {
                 final Text text = new Text(code, 30, AndroidUtilities.bold());
                 thumb = new Drawable() {
@@ -694,7 +694,7 @@ public class OAuthSheet {
 
                 if (document != null) {
                     final int size = 40;
-                    final Drawable thumb = Emoji.getEmojiBigDrawable(code);
+                    final Drawable thumb = Emoji.getOfficialEmojiBigDrawable(code);
                     final TLRPC.PhotoSize photoSize = FileLoader.getClosestPhotoSizeWithSize(document.thumbs, size);
                     buttons[i].setImage(
                         ImageLocation.getForDocument(document),
