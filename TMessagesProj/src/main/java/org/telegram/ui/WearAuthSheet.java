@@ -358,7 +358,7 @@ public class WearAuthSheet {
         emojisLayout.setOrientation(LinearLayout.HORIZONTAL);
         for (int i = 0; i < emojis.size(); ++i) {
             final String emoji = emojis.get(i);
-            final Drawable emojiDrawable = Emoji.getEmojiBigDrawable(emoji);
+            final Drawable emojiDrawable = Emoji.getOfficialEmojiBigDrawable(emoji);
             final ImageView imageView = new ImageView(context);
             imageView.setImageDrawable(emojiDrawable);
             NotificationCenter.listenEmojiLoading(imageView);
