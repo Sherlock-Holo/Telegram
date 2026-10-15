@@ -13,8 +13,6 @@ import androidx.collection.LongSparseArray;
 
 import com.google.android.gms.common.ConnectionResult;
 import com.google.android.gms.common.GoogleApiAvailability;
-import com.google.firebase.FirebaseApp;
-import com.google.firebase.messaging.FirebaseMessaging;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -1782,6 +1780,10 @@ public class PushListenerController {
         int getPushType();
     }
 
+    /**
+     * Fork: FCM removed. This provider is kept ONLY as a "is Google Play Services present" probe
+     * (used by location / Google sign-in code); it no longer requests an FCM token.
+     */
     public final static class GooglePushListenerServiceProvider implements IPushListenerServiceProvider {
         public final static GooglePushListenerServiceProvider INSTANCE = new GooglePushListenerServiceProvider();
 
@@ -1801,40 +1803,7 @@ public class PushListenerController {
 
         @Override
         public void onRequestPushToken() {
-            String currentPushString = SharedConfig.pushString;
-            if (!TextUtils.isEmpty(currentPushString)) {
-                if (BuildVars.DEBUG_PRIVATE_VERSION && BuildVars.LOGS_ENABLED) {
-                    FileLog.d("FCM regId = " + currentPushString);
-                }
-            } else {
-                if (BuildVars.LOGS_ENABLED) {
-                    FileLog.d("FCM Registration not found.");
-                }
-            }
-            Utilities.globalQueue.postRunnable(() -> {
-                try {
-                    SharedConfig.pushStringGetTimeStart = SystemClock.elapsedRealtime();
-                    FirebaseApp.initializeApp(ApplicationLoader.applicationContext);
-                    FirebaseMessaging.getInstance().getToken()
-                            .addOnCompleteListener(task -> {
-                                SharedConfig.pushStringGetTimeEnd = SystemClock.elapsedRealtime();
-                                if (!task.isSuccessful()) {
-                                    if (BuildVars.LOGS_ENABLED) {
-                                        FileLog.d("Failed to get regid");
-                                    }
-                                    SharedConfig.pushStringStatus = "__FIREBASE_FAILED__";
-                                    PushListenerController.sendRegistrationToServer(getPushType(), null);
-                                    return;
-                                }
-                                String token = task.getResult();
-                                if (!TextUtils.isEmpty(token)) {
-                                    PushListenerController.sendRegistrationToServer(getPushType(), token);
-                                }
-                            });
-                } catch (Throwable e) {
-                    FileLog.e(e);
-                }
-            });
+            // FCM removed in this fork: nothing to request.
         }
 
         @Override
@@ -1849,6 +1818,36 @@ public class PushListenerController {
                 }
             }
             return hasServices;
+        }
+    }
+
+    /**
+     * Fork: "no push token" provider. hasServices() == false makes ApplicationLoader.initPushServices()
+     * take the already-supported "no push service" path (status string only, no registerDevice call),
+     * so the app relies on the MTProto push connection (ConnectionTypePush) + NotificationsService.
+     */
+    public final static class NoPushListenerServiceProvider implements IPushListenerServiceProvider {
+        public final static NoPushListenerServiceProvider INSTANCE = new NoPushListenerServiceProvider();
+
+        private NoPushListenerServiceProvider() {}
+
+        @Override
+        public boolean hasServices() {
+            return false;
+        }
+
+        @Override
+        public String getLogTitle() {
+            return "Telegram background connection";
+        }
+
+        @Override
+        public void onRequestPushToken() {
+        }
+
+        @Override
+        public int getPushType() {
+            return PUSH_TYPE_FIREBASE;
         }
     }
 }
