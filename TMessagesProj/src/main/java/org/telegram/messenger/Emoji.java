@@ -68,7 +68,12 @@ public class Emoji {
     // built-in (official) set, never from a user-installed pack. Separate cache, never swapped by packs.
     private static final Bitmap[][] officialEmojiBmp = new Bitmap[8][];
     private static final boolean[][] loadingOfficialEmoji = new boolean[8][];
-    private static boolean forceOfficial; // UI thread only
+    // thread-local so concurrent drawable creation on other threads cannot leak the flag
+    private static final ThreadLocal<Boolean> forceOfficial = new ThreadLocal<>();
+
+    private static boolean isForceOfficial() {
+        return Boolean.TRUE.equals(forceOfficial.get());
+    }
 
     public final static HashMap<String, Integer> emojiUseHistory = new HashMap<>();
     public final static ArrayList<String> recentEmoji = new ArrayList<>();
@@ -147,32 +152,44 @@ public class Emoji {
     }
 
     public static EmojiDrawable getOfficialEmojiDrawable(CharSequence code) {
-        final boolean prev = forceOfficial;
-        forceOfficial = true;
+        final Boolean prev = forceOfficial.get();
+        forceOfficial.set(Boolean.TRUE);
         try {
             return getEmojiDrawable(code);
         } finally {
-            forceOfficial = prev;
+            if (prev == null) {
+                forceOfficial.remove();
+            } else {
+                forceOfficial.set(prev);
+            }
         }
     }
 
     public static Drawable getOfficialEmojiBigDrawable(String code) {
-        final boolean prev = forceOfficial;
-        forceOfficial = true;
+        final Boolean prev = forceOfficial.get();
+        forceOfficial.set(Boolean.TRUE);
         try {
             return getEmojiBigDrawable(code);
         } finally {
-            forceOfficial = prev;
+            if (prev == null) {
+                forceOfficial.remove();
+            } else {
+                forceOfficial.set(prev);
+            }
         }
     }
 
     public static CharSequence replaceOfficialEmoji(CharSequence cs, Paint.FontMetricsInt fontMetrics, boolean createNew) {
-        final boolean prev = forceOfficial;
-        forceOfficial = true;
+        final Boolean prev = forceOfficial.get();
+        forceOfficial.set(Boolean.TRUE);
         try {
             return replaceEmoji(cs, fontMetrics, createNew);
         } finally {
-            forceOfficial = prev;
+            if (prev == null) {
+                forceOfficial.remove();
+            } else {
+                forceOfficial.set(prev);
+            }
         }
     }
 
@@ -209,15 +226,20 @@ public class Emoji {
                 } catch (Exception e) {
                     FileLog.e(e);
                 }
-                if (generation != packGeneration) {
-                    return; // pack was switched while decoding; the new generation reloads on demand
-                }
-                if (bitmap != null) {
-                    emojiBmp[page][page2] = bitmap;
-                    AndroidUtilities.cancelRunOnUIThread(invalidateUiRunnable);
-                    AndroidUtilities.runOnUIThread(invalidateUiRunnable);
-                }
-                loadingEmoji[page][page2] = false;
+                final Bitmap result = bitmap;
+                // Check generation + write cache + clear loading flag on the UI thread, the same thread that
+                // clears the cache in onEmojiPackChanged(), so a stale bitmap can never land in the new cache.
+                AndroidUtilities.runOnUIThread(() -> {
+                    if (generation != packGeneration) {
+                        return; // pack was switched while decoding; the new generation reloads on demand
+                    }
+                    if (result != null) {
+                        emojiBmp[page][page2] = result;
+                        AndroidUtilities.cancelRunOnUIThread(invalidateUiRunnable);
+                        AndroidUtilities.runOnUIThread(invalidateUiRunnable);
+                    }
+                    loadingEmoji[page][page2] = false;
+                });
             });
         }
     }
@@ -305,7 +327,7 @@ public class Emoji {
             }
             return null;
         }
-        EmojiDrawable ed = new SimpleEmojiDrawable(info, endsWithRightArrow(code), forceOfficial);
+        EmojiDrawable ed = new SimpleEmojiDrawable(info, endsWithRightArrow(code), isForceOfficial());
         ed.setBounds(0, 0, drawImgSize, drawImgSize);
         return ed;
     }
@@ -423,7 +445,8 @@ public class Emoji {
 
         @Override
         public void draw(Canvas canvas) {
-            if (!isLoaded()) {
+            final Bitmap bitmap = bmp(); // read once: the pack cache can be cleared from the UI thread at any time
+            if (bitmap == null) {
                 load();
                 placeholderPaint.setColor(placeholderColor);
                 Rect bounds = getBounds();
@@ -443,7 +466,7 @@ public class Emoji {
                     canvas.save();
                     canvas.scale(-1, 1, b.centerX(), b.centerY());
                 }
-                canvas.drawBitmap(bmp(), null, b, paint);
+                canvas.drawBitmap(bitmap, null, b, paint);
                 if (invert) {
                     canvas.restore();
                 }
