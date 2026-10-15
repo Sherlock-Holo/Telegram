@@ -40,9 +40,12 @@ public final class EmojiPackManager {
     private static final String PREF_KEY = "emojiPackId";
 
     private static final int MAX_ENTRIES = 5000;
-    private static final long MAX_ENTRY_BYTES = 256 * 1024;
-    private static final long MAX_TOTAL_BYTES = 64L * 1024 * 1024;
-    private static final int MAX_SIDE = 256;
+    private static final long MAX_ENTRY_BYTES = 1024 * 1024;
+    private static final long MAX_TOTAL_BYTES = 256L * 1024 * 1024;
+    // Larger source images (e.g. 512px Noto, 618px OpenMoji) are accepted; decode() always downsamples them to ~TARGET_SIDE,
+    // so the in-memory cost per emoji stays the same as for 64px packs.
+    private static final int MAX_SIDE = 1024;
+    private static final String INSTALLED_MARKER = ".installed";
     private static final int TARGET_SIDE = 64;
 
     private static volatile String activePackId;
@@ -70,7 +73,7 @@ public final class EmojiPackManager {
         return id != null && id.matches("[A-Za-z0-9_.-]{1,48}") && !id.startsWith(".");
     }
 
-    public static String getActivePackId() {
+    public static synchronized String getActivePackId() {
         if (activePackId == null) {
             String id = prefs().getString(PREF_KEY, DEFAULT_PACK);
             if (!DEFAULT_PACK.equals(id) && (!isSafeId(id) || !new File(getPacksDir(), id).isDirectory())) {
@@ -83,7 +86,7 @@ public final class EmojiPackManager {
     }
 
     /** Switches pack and tells Emoji to drop its bitmap cache. Safe to call from the UI thread. */
-    public static void setActivePack(String id) {
+    public static synchronized void setActivePack(String id) {
         if (id == null) {
             id = DEFAULT_PACK;
         }
@@ -125,6 +128,9 @@ public final class EmojiPackManager {
                 continue;
             }
             try {
+                if (isUpToDate(zip, id)) {
+                    continue; // already installed from this exact zip: no IO, no cache reset
+                }
                 installZip(zip, id);
                 installed.add(id);
             } catch (Exception e) {
@@ -187,6 +193,9 @@ public final class EmojiPackManager {
                 deleteRecursive(tmp);
             }
         }
+        try (FileOutputStream fos = new FileOutputStream(new File(tmp, INSTALLED_MARKER))) {
+            fos.write(zipStamp(zip).getBytes("UTF-8"));
+        }
         deleteRecursive(target);
         if (!tmp.renameTo(target)) {
             deleteRecursive(tmp);
@@ -194,6 +203,32 @@ public final class EmojiPackManager {
         }
         if (id.equals(activePackId)) {
             Emoji.onEmojiPackChanged();
+        }
+    }
+
+    private static String zipStamp(File zip) {
+        return zip.length() + ":" + zip.lastModified();
+    }
+
+    /** True if pack {@code id} is installed and was extracted from a zip with the same size and mtime as {@code zip}. */
+    private static boolean isUpToDate(File zip, String id) {
+        File marker = new File(new File(getPacksDir(), id), INSTALLED_MARKER);
+        if (!marker.isFile() || marker.length() > 128) {
+            return false;
+        }
+        try (InputStream is = new FileInputStream(marker)) {
+            byte[] data = new byte[(int) marker.length()];
+            int off = 0;
+            while (off < data.length) {
+                int n = is.read(data, off, data.length - off);
+                if (n < 0) {
+                    break;
+                }
+                off += n;
+            }
+            return zipStamp(zip).equals(new String(data, 0, off, "UTF-8"));
+        } catch (IOException e) {
+            return false;
         }
     }
 

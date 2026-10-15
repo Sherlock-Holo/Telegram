@@ -9932,7 +9932,7 @@ public class GroupCallActivity extends BottomSheet implements NotificationCenter
             for (int i = 0; i < pool.length - 1; ++i) {
                 pool[i] = pool[i + 1];
             }
-            pool[pool.length - 1] = Emoji.getEmojiDrawable(getRandomEmoji());
+            pool[pool.length - 1] = Emoji.getOfficialEmojiDrawable(getRandomEmoji());
         }
     }
 
