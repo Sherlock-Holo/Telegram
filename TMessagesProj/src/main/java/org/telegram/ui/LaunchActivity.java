@@ -2845,9 +2845,9 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                                             NotificationCenter.getInstance(intentAccount[0]).postNotificationName(NotificationCenter.closeChats);
                                             push_user_id = userId;
                                             String mimeType = cursor.getString(cursor.getColumnIndex(ContactsContract.Data.MIMETYPE));
-                                            if (TextUtils.equals(mimeType, "vnd.android.cursor.item/vnd.org.telegram.messenger.android.call")) {
+                                            if (TextUtils.equals(mimeType, "vnd.android.cursor.item/vnd.io.holo.telegram.android.call")) {
                                                 audioCallUser = true;
-                                            } else if (TextUtils.equals(mimeType, "vnd.android.cursor.item/vnd.org.telegram.messenger.android.call.video")) {
+                                            } else if (TextUtils.equals(mimeType, "vnd.android.cursor.item/vnd.io.holo.telegram.android.call.video")) {
                                                 videoCallUser = true;
                                             }
                                         }
@@ -2858,7 +2858,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                             }
                         }
                     }
-                } else if (intent.getAction().equals("org.telegram.messenger.OPEN_ACCOUNT")) {
+                } else if (intent.getAction().equals("io.holo.telegram.OPEN_ACCOUNT")) {
                     open_settings = 1;
                 } else if (intent.getAction().equals("new_dialog")) {
                     open_new_dialog = 1;
