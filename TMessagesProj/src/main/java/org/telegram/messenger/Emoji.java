@@ -110,19 +110,41 @@ public class Emoji {
 
     private static int memoryUsage;
 
+    // Bumped every time the user switches emoji pack; results of stale loads are dropped.
+    private static volatile int packGeneration;
+
+    /** Drops cached bitmaps so they are reloaded from the newly selected pack (see EmojiPackManager). */
+    public static void onEmojiPackChanged() {
+        AndroidUtilities.runOnUIThread(() -> {
+            packGeneration++;
+            for (int a = 0; a < emojiBmp.length; a++) {
+                java.util.Arrays.fill(emojiBmp[a], null); // not recycled: drawables may still be drawing them
+                java.util.Arrays.fill(loadingEmoji[a], false);
+            }
+            NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.emojiLoaded);
+        });
+    }
+
     private static void loadEmoji(final byte page, final short page2) {
         if (emojiBmp[page][page2] == null) {
             if (loadingEmoji[page][page2]) {
                 return;
             }
             loadingEmoji[page][page2] = true;
+            final int generation = packGeneration;
             Utilities.globalQueue.postRunnable(() -> {
                 Bitmap bitmap = null;
                 try {
-                    final EmojiPack emojiPack = EmojiPack.getInstance();
-                    bitmap = emojiPack.getEmoji(page, page2);
+                    bitmap = EmojiPackManager.load(page, page2); // custom pack, null if none/missing
+                    if (bitmap == null) {
+                        final EmojiPack emojiPack = EmojiPack.getInstance();
+                        bitmap = emojiPack.getEmoji(page, page2);
+                    }
                 } catch (Exception e) {
                     FileLog.e(e);
+                }
+                if (generation != packGeneration) {
+                    return; // pack was switched while decoding; the new generation reloads on demand
                 }
                 if (bitmap != null) {
                     emojiBmp[page][page2] = bitmap;
