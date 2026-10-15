@@ -501,6 +501,10 @@ public class AnimatedEmojiDrawable extends Drawable {
     }
 
     public void setupEmojiThumb(String emoji) {
+        setupEmojiThumb(emoji, false);
+    }
+
+    public void setupEmojiThumb(String emoji, boolean official) {
         if (cacheType != CACHE_TYPE_STANDARD_EMOJI && cacheType != CACHE_TYPE_ALERT_STANDARD_EMOJI) {
             return;
         }
@@ -512,7 +516,7 @@ public class AnimatedEmojiDrawable extends Drawable {
         }
         createImageReceiver();
         imageReceiverEmojiThumb = true;
-        imageReceiver.setImageBitmap(Emoji.getEmojiDrawable(emoji));
+        imageReceiver.setImageBitmap(official ? Emoji.getOfficialEmojiDrawable(emoji) : Emoji.getEmojiDrawable(emoji));
         imageReceiver.setCrossfadeWithOldImage(true);
     }
 

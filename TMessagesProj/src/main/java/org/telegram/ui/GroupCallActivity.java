@@ -9763,7 +9763,7 @@ public class GroupCallActivity extends BottomSheet implements NotificationCenter
         public EmojiSlot(int offset) {
             this.offset = offset;
             for (int i = 0; i < pool.length; ++i) {
-                pool[i] = Emoji.getEmojiDrawable(getRandomEmoji());
+                pool[i] = Emoji.getOfficialEmojiDrawable(getRandomEmoji());
             }
             startTime = System.currentTimeMillis();
         }
@@ -9776,10 +9776,10 @@ public class GroupCallActivity extends BottomSheet implements NotificationCenter
                 if (real != null) {
                     real.removeView(invalidate);
                 }
-                realThumb = Emoji.getEmojiDrawable(emoji);
+                realThumb = Emoji.getOfficialEmojiDrawable(emoji);
                 final int currentAccount = UserConfig.getProductionAccount();
                 real = new AnimatedEmojiDrawable(AnimatedEmojiDrawable.CACHE_TYPE_ALERT_STANDARD_EMOJI, currentAccount);
-                real.setupEmojiThumb(lastEmoji = emoji);
+                real.setupEmojiThumb(lastEmoji = emoji, true);
                 updateEmoji();
                 if (attached) {
                     real.addView(invalidate);

@@ -2483,8 +2483,8 @@ public class VoIPFragment implements
         String[] emoji = EncryptionKeyEmojifier.emojifyForCall(sha256);
 
         for (int i = 0; i < 4; i++) {
-            Emoji.preloadEmoji(emoji[i]);
-            Drawable drawable = Emoji.getEmojiDrawable(emoji[i]);
+            Emoji.preloadOfficialEmoji(emoji[i]);
+            Drawable drawable = Emoji.getOfficialEmojiDrawable(emoji[i]);
             if (drawable != null) {
                 drawable.setBounds(0, 0, AndroidUtilities.dp(40), AndroidUtilities.dp(40));
                 ((Emoji.EmojiDrawable) drawable).preload();
@@ -2501,7 +2501,7 @@ public class VoIPFragment implements
                     } else {
                         emojiDrawables[i] = animatedDrawable = new AnimatedEmojiDrawable(AnimatedEmojiDrawable.CACHE_TYPE_ALERT_STANDARD_EMOJI, currentAccount, doc1);
                     }
-                    animatedDrawable.setupEmojiThumb(emoji[i]);
+                    animatedDrawable.setupEmojiThumb(emoji[i], true);
                     emojiViews[i].setAnimatedEmojiDrawable(animatedDrawable);
                     emojiViews[i].getImageReceiver().clearImage();
                     drawable = animatedDrawable;
