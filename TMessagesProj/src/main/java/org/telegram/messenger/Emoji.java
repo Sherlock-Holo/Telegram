@@ -64,6 +64,12 @@ public class Emoji {
     private static Bitmap[][] emojiBmp = new Bitmap[8][];
     private static boolean[][] loadingEmoji = new boolean[8][];
 
+    // Fork: emoji shown for call / secret-chat / device-auth VERIFICATION must always come from the
+    // built-in (official) set, never from a user-installed pack. Separate cache, never swapped by packs.
+    private static final Bitmap[][] officialEmojiBmp = new Bitmap[8][];
+    private static final boolean[][] loadingOfficialEmoji = new boolean[8][];
+    private static boolean forceOfficial; // UI thread only
+
     public final static HashMap<String, Integer> emojiUseHistory = new HashMap<>();
     public final static ArrayList<String> recentEmoji = new ArrayList<>();
     public final static HashMap<String, String> emojiColor = new HashMap<>();
@@ -89,6 +95,8 @@ public class Emoji {
         for (int a = 0; a < emojiBmp.length; a++) {
             emojiBmp[a] = new Bitmap[emojiCounts[a]];
             loadingEmoji[a] = new boolean[emojiCounts[a]];
+            officialEmojiBmp[a] = new Bitmap[emojiCounts[a]];
+            loadingOfficialEmoji[a] = new boolean[emojiCounts[a]];
         }
 
         for (int j = 0; j < EmojiData.data.length; j++) {
@@ -109,6 +117,64 @@ public class Emoji {
     }
 
     private static int memoryUsage;
+
+    private static void loadOfficialEmoji(final byte page, final short page2) {
+        if (officialEmojiBmp[page][page2] != null || loadingOfficialEmoji[page][page2]) {
+            return;
+        }
+        loadingOfficialEmoji[page][page2] = true;
+        Utilities.globalQueue.postRunnable(() -> {
+            Bitmap bitmap = null;
+            try {
+                bitmap = EmojiPack.getInstance().getEmoji(page, page2); // built-in pack only
+            } catch (Exception e) {
+                FileLog.e(e);
+            }
+            if (bitmap != null) {
+                officialEmojiBmp[page][page2] = bitmap;
+                AndroidUtilities.cancelRunOnUIThread(invalidateUiRunnable);
+                AndroidUtilities.runOnUIThread(invalidateUiRunnable);
+            }
+            loadingOfficialEmoji[page][page2] = false;
+        });
+    }
+
+    public static void preloadOfficialEmoji(CharSequence code) {
+        final DrawableInfo info = getDrawableInfo(code);
+        if (info != null) {
+            loadOfficialEmoji(info.page, info.page2);
+        }
+    }
+
+    public static EmojiDrawable getOfficialEmojiDrawable(CharSequence code) {
+        final boolean prev = forceOfficial;
+        forceOfficial = true;
+        try {
+            return getEmojiDrawable(code);
+        } finally {
+            forceOfficial = prev;
+        }
+    }
+
+    public static Drawable getOfficialEmojiBigDrawable(String code) {
+        final boolean prev = forceOfficial;
+        forceOfficial = true;
+        try {
+            return getEmojiBigDrawable(code);
+        } finally {
+            forceOfficial = prev;
+        }
+    }
+
+    public static CharSequence replaceOfficialEmoji(CharSequence cs, Paint.FontMetricsInt fontMetrics, boolean createNew) {
+        final boolean prev = forceOfficial;
+        forceOfficial = true;
+        try {
+            return replaceEmoji(cs, fontMetrics, createNew);
+        } finally {
+            forceOfficial = prev;
+        }
+    }
 
     // Bumped every time the user switches emoji pack; results of stale loads are dropped.
     private static volatile int packGeneration;
@@ -239,7 +305,7 @@ public class Emoji {
             }
             return null;
         }
-        EmojiDrawable ed = new SimpleEmojiDrawable(info, endsWithRightArrow(code));
+        EmojiDrawable ed = new SimpleEmojiDrawable(info, endsWithRightArrow(code), forceOfficial);
         ed.setBounds(0, 0, drawImgSize, drawImgSize);
         return ed;
     }
@@ -317,10 +383,28 @@ public class Emoji {
         private static Paint paint = new Paint(Paint.FILTER_BITMAP_FLAG);
         private static Rect rect = new Rect();
         private boolean invert;
+        private boolean official;
 
         public SimpleEmojiDrawable(DrawableInfo i, boolean invert) {
+            this(i, invert, false);
+        }
+
+        public SimpleEmojiDrawable(DrawableInfo i, boolean invert, boolean official) {
             info = i;
             this.invert = invert;
+            this.official = official;
+        }
+
+        private Bitmap bmp() {
+            return official ? officialEmojiBmp[info.page][info.page2] : emojiBmp[info.page][info.page2];
+        }
+
+        private void load() {
+            if (official) {
+                loadOfficialEmoji(info.page, info.page2);
+            } else {
+                loadEmoji(info.page, info.page2);
+            }
         }
 
         public DrawableInfo getDrawableInfo() {
@@ -340,7 +424,7 @@ public class Emoji {
         @Override
         public void draw(Canvas canvas) {
             if (!isLoaded()) {
-                loadEmoji(info.page, info.page2);
+                load();
                 placeholderPaint.setColor(placeholderColor);
                 Rect bounds = getBounds();
                 canvas.drawCircle(bounds.centerX(), bounds.centerY(), bounds.width() * .4f, placeholderPaint);
@@ -359,7 +443,7 @@ public class Emoji {
                     canvas.save();
                     canvas.scale(-1, 1, b.centerX(), b.centerY());
                 }
-                canvas.drawBitmap(emojiBmp[info.page][info.page2], null, b, paint);
+                canvas.drawBitmap(bmp(), null, b, paint);
                 if (invert) {
                     canvas.restore();
                 }
@@ -383,13 +467,13 @@ public class Emoji {
 
         @Override
         public boolean isLoaded() {
-            return emojiBmp[info.page][info.page2] != null;
+            return bmp() != null;
         }
 
         @Override
         public void preload() {
             if (!isLoaded()) {
-                loadEmoji(info.page, info.page2);
+                load();
             }
         }
     }
