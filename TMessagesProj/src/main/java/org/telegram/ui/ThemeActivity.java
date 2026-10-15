@@ -55,6 +55,7 @@ import androidx.recyclerview.widget.RecyclerView;
 import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
+import org.telegram.messenger.EmojiPackManager;
 import org.telegram.messenger.FileLoader;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.LocaleController;
@@ -230,6 +231,7 @@ public class ThemeActivity extends BaseFragment implements NotificationCenter.No
     private int lastShadowRow;
     @Keep
     private int stickersRow;
+    private int emojiPackRow;
     private int stickersInfoRow;
     private int stickersSectionRow, mediaSoundSectionRow, otherSectionRow;
     private int mediaSoundHeaderRow, otherHeaderRow;
@@ -676,6 +678,7 @@ public class ThemeActivity extends BaseFragment implements NotificationCenter.No
         pauseOnRecordRow = -1;
         pauseOnMediaRow = -1;
         stickersRow = -1;
+        emojiPackRow = -1;
         stickersInfoRow = -1;
         stickersSectionRow = -1;
         mediaSoundHeaderRow = -1;
@@ -790,6 +793,7 @@ public class ThemeActivity extends BaseFragment implements NotificationCenter.No
             browserRow = rowCount++;
             liteModeRow = rowCount++;
             stickersRow = rowCount++;
+            emojiPackRow = rowCount++;
             stickersSectionRow = rowCount++;
 
             mediaSoundHeaderRow = rowCount++;
@@ -1599,6 +1603,8 @@ public class ThemeActivity extends BaseFragment implements NotificationCenter.No
                 presentFragment(new StickersActivity(MediaDataController.TYPE_IMAGE, null));
             } else if (position == liteModeRow) {
                 presentFragment(new LiteModeSettingsActivity());
+            } else if (position == emojiPackRow) {
+                showEmojiPackChooser();
             }
         });
         if (currentType == THEME_TYPE_BASIC) {
@@ -1636,6 +1642,38 @@ public class ThemeActivity extends BaseFragment implements NotificationCenter.No
         Theme.ThemeInfo currentTheme = Theme.getCurrentTheme();
         Theme.ThemeAccent accent = currentTheme.getAccent(false);
         presentFragment(new ThemePreviewActivity(currentTheme, false, ThemePreviewActivity.SCREEN_TYPE_ACCENT_COLOR, accent.id >= 100, currentType == THEME_TYPE_NIGHT));
+    }
+
+    /** PoC: lets the user pick an installed emoji pack; zips are imported from the app's external files dir. */
+    private void showEmojiPackChooser() {
+        if (getParentActivity() == null) {
+            return;
+        }
+        Utilities.globalQueue.postRunnable(() -> {
+            EmojiPackManager.installPendingZips();
+            final java.util.ArrayList<String> ids = EmojiPackManager.listInstalled();
+            AndroidUtilities.runOnUIThread(() -> {
+                if (getParentActivity() == null) {
+                    return;
+                }
+                final String[] names = new String[ids.size() + 1];
+                names[0] = getString(R.string.EmojiStyleDefault);
+                int selected = 0;
+                final String active = EmojiPackManager.getActivePackId();
+                for (int i = 0; i < ids.size(); i++) {
+                    names[i + 1] = ids.get(i);
+                    if (ids.get(i).equals(active)) {
+                        selected = i + 1;
+                    }
+                }
+                showDialog(AlertsCreator.createSingleChoiceDialog(getParentActivity(), names, getString(R.string.EmojiStyle), selected, (dialog, which) -> {
+                    EmojiPackManager.setActivePack(which == 0 ? EmojiPackManager.DEFAULT_PACK : ids.get(which - 1));
+                    if (listAdapter != null && emojiPackRow != -1) {
+                        listAdapter.notifyItemChanged(emojiPackRow);
+                    }
+                }));
+            });
+        });
     }
 
     private void createNewTheme() {
@@ -2804,6 +2842,14 @@ public class ThemeActivity extends BaseFragment implements NotificationCenter.No
                         cell.offsetFromImage = 64;
                         cell.heightDp = 60;
                         cell.imageLeft = 20;
+                    } else if (position == emojiPackRow) {
+                        cell.setColors(Theme.key_dialogIcon, Theme.key_windowBackgroundWhiteBlackText);
+                        cell.setTextAndIcon(getString(R.string.EmojiStyle), R.drawable.msg2_sticker, false);
+                        String packId = EmojiPackManager.getActivePackId();
+                        cell.setSubtitle(packId.isEmpty() ? getString(R.string.EmojiStyleDefault) : packId);
+                        cell.offsetFromImage = 64;
+                        cell.heightDp = 60;
+                        cell.imageLeft = 20;
                     }
                     break;
                 }
@@ -2878,7 +2924,7 @@ public class ThemeActivity extends BaseFragment implements NotificationCenter.No
             } else if (position == bubbleRadiusRow) {
                 return TYPE_BUBBLE_RADIUS;
             } else if (position == backgroundRow || position == editThemeRow || position == createNewThemeRow ||
-                        position == liteModeRow || position == stickersRow) {
+                        position == liteModeRow || position == stickersRow || position == emojiPackRow) {
                 return TYPE_TEXT_PREFERENCE;
             } else if (position == swipeGestureRow) {
                 return TYPE_SWIPE_GESTURE;
