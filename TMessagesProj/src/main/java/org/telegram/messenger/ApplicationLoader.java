@@ -114,7 +114,7 @@ public class ApplicationLoader extends Application {
     }
 
     protected PushListenerController.IPushListenerServiceProvider onCreatePushProvider() {
-        return PushListenerController.GooglePushListenerServiceProvider.INSTANCE;
+        return PushListenerController.NoPushListenerServiceProvider.INSTANCE;
     }
 
     public static String getApplicationId() {
@@ -370,7 +370,7 @@ public class ApplicationLoader extends Application {
         if (preferences.contains("pushService")) {
             enabled = preferences.getBoolean("pushService", true);
         } else {
-            enabled = MessagesController.getMainSettings(UserConfig.selectedAccount).getBoolean("keepAliveService", false);
+            enabled = MessagesController.getMainSettings(UserConfig.selectedAccount).getBoolean("keepAliveService", true);
         }
         if (enabled) {
             try {
