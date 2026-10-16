@@ -85,6 +85,11 @@ class UnifiedPushSettingsActivity : UniversalFragment() {
         items.add(UItem.asButton(ID_REREGISTER, getString(R.string.UnifiedPushReregister)))
         items.add(UItem.asButton(ID_UNREGISTER, getString(R.string.UnifiedPushUnregister)).red())
         items.add(UItem.asShadow(getString(R.string.UnifiedPushTestInfo)))
+        // The two keep-alive options in Notifications and Sounds are on by default in this build.
+        items.add(UItem.asShadow(
+            if (UnifiedPushManager.getStatus() == UnifiedPushManager.STATUS_REGISTERED)
+                getString(R.string.UnifiedPushKeepAliveInfo) + " " + getString(R.string.UnifiedPushKeepAliveRegistered)
+            else getString(R.string.UnifiedPushKeepAliveInfo)))
 
         val context = ApplicationLoader.applicationContext
         val pm = context.getSystemService(android.content.Context.POWER_SERVICE) as PowerManager?
@@ -138,11 +143,13 @@ class UnifiedPushSettingsActivity : UniversalFragment() {
         }
         Utilities.globalQueue.postRunnable {
             val text = try {
-                val code = UnifiedPushManager.sendTestPush(endpoint)
-                if (code in 200..299) LocaleController.formatString(R.string.UnifiedPushTestSent, code)
-                else LocaleController.formatString(R.string.UnifiedPushTestFailed, "HTTP $code")
+                when (val code = UnifiedPushManager.sendTestPush(endpoint)) {
+                    in 200..299 -> LocaleController.formatString(R.string.UnifiedPushTestSent, code)
+                    405, 501 -> getString(R.string.UnifiedPushTestNoPut)
+                    else -> LocaleController.formatString(R.string.UnifiedPushTestFailed, "HTTP $code")
+                }
             } catch (e: Throwable) {
-                LocaleController.formatString(R.string.UnifiedPushTestFailed, e.message.toString())
+                LocaleController.formatString(R.string.UnifiedPushTestFailed, e.message ?: e.javaClass.simpleName)
             }
             AndroidUtilities.runOnUIThread {
                 if (!isFinishing && parentActivity != null) {

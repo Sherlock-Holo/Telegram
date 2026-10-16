@@ -13,5 +13,6 @@ object UnifiedPushListenerServiceProvider : PushListenerController.IPushListener
 
     override fun onRequestPushToken() = UnifiedPushManager.ensureRegistered()
 
-    override fun getPushType(): Int = UnifiedPushManager.TOKEN_TYPE
+    override fun getPushType(): Int =
+        if (UnifiedPushManager.isActive()) UnifiedPushManager.TOKEN_TYPE else PushListenerController.PUSH_TYPE_FIREBASE
 }

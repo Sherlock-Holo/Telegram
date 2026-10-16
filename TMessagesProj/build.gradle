@@ -61,10 +61,13 @@ dependencies {
     implementation 'androidx.car.app:app-projected:1.4.0'
     implementation 'org.nanohttpd:nanohttpd:2.3.1'
     // UnifiedPush connector (Fork: push without Google services). 3.0.10 pulls kotlin-stdlib 2.0.21, i.e. nothing newer
-    // than our Kotlin 2.1.0 toolchain; same version Mercurygram ships. Its tink 1.17.0 (jvm artifact) clashes with the
-    // tink-android 1.5.0 that recaptcha -> security-crypto already brings (checkDuplicateClasses fails), so it is excluded.
-    // Tink is only used by the connector for WebPush decryption helpers, which Simple Push (type 4) never touches;
-    // revisit (e.g. force tink-android 1.5.0 out instead) when WebPush type 10 is implemented.
+    // than our Kotlin 2.1.0 toolchain; same version Mercurygram ships.
+    // The connector DOES use Tink (WebPush key generation on every register(), and serializing the public key set in
+    // NEW_ENDPOINT), also on the Simple Push path. Its tink:1.17.0 (jvm artifact) clashes with the tink-android 1.5.0 that
+    // recaptcha -> security-crypto already brings (checkDuplicateClasses fails), so it is excluded: the 11 Tink APIs the
+    // connector AAR calls (Bytes, EllipticCurves, EngineFactory, Hkdf, Random, HybridEncrypt/Decrypt) all exist with the
+    // same signatures in tink-android 1.5.0 (checked with javap in review). Re-check the HKDF/AES-GCM decryption
+    // behaviour when WebPush (type 10) is implemented.
     implementation('org.unifiedpush.android:connector:3.0.10') {
         exclude group: 'com.google.crypto.tink', module: 'tink'
     }
