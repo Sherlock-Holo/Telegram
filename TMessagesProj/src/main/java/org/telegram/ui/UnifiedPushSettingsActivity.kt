@@ -51,7 +51,8 @@ class UnifiedPushSettingsActivity : UniversalFragment() {
         if (!enabled) return
 
         items.add(UItem.asHeader(getString(R.string.UnifiedPushDistributor)))
-        val distributors = UnifiedPushManager.getDistributors()
+        val installed = UnifiedPushManager.getDistributors() // null = could not be determined
+        val distributors = installed ?: emptyList()
         val current = UnifiedPushManager.getDistributor()
         for (pkg in distributors) {
             val row = UItem.asRadio(ID_DISTRIBUTOR, UnifiedPushManager.getDistributorLabel(pkg), pkg).setChecked(pkg == current)
@@ -59,6 +60,7 @@ class UnifiedPushSettingsActivity : UniversalFragment() {
             items.add(row)
         }
         items.add(UItem.asShadow(when {
+            installed == null -> getString(R.string.UnifiedPushDistributorInfo)
             distributors.isEmpty() -> getString(R.string.UnifiedPushNoDistributors)
             current != null && !distributors.contains(current) ->
                 LocaleController.formatString(R.string.UnifiedPushDistributorMissing, current)
