@@ -85,7 +85,6 @@ class UnifiedPushSettingsActivity : UniversalFragment() {
         items.add(UItem.asButton(ID_REREGISTER, getString(R.string.UnifiedPushReregister)))
         items.add(UItem.asButton(ID_UNREGISTER, getString(R.string.UnifiedPushUnregister)).red())
         items.add(UItem.asShadow(getString(R.string.UnifiedPushTestInfo)))
-        // The two keep-alive options in Notifications and Sounds are on by default in this build.
         items.add(UItem.asShadow(
             if (UnifiedPushManager.getStatus() == UnifiedPushManager.STATUS_REGISTERED)
                 getString(R.string.UnifiedPushKeepAliveInfo) + " " + getString(R.string.UnifiedPushKeepAliveRegistered)
@@ -180,6 +179,7 @@ class UnifiedPushSettingsActivity : UniversalFragment() {
             UnifiedPushManager.STATUS_FAILED ->
                 LocaleController.formatString(R.string.UnifiedPushStatusFailed, UnifiedPushManager.getLastError())
             UnifiedPushManager.STATUS_UNREGISTERED_BY_DISTRIBUTOR -> getString(R.string.UnifiedPushStatusUnregistered)
+            UnifiedPushManager.STATUS_DISTRIBUTOR_MISSING -> getString(R.string.UnifiedPushStatusDistributorMissing)
             else -> getString(R.string.UnifiedPushStatusDisabled)
         }
     }
