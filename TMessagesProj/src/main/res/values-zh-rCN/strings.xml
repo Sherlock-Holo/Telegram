@@ -29,12 +29,14 @@
     <string name="UnifiedPushTestSent">测试推送已发送（HTTP %1$d）。</string>
     <string name="UnifiedPushTestFailed">测试推送失败：%1$s</string>
     <string name="UnifiedPushTestNoPut">该分发器不接受 PUT 请求，而 Telegram 发送的正是 PUT。真实推送无法到达；这个分发器需要网关才能使用。</string>
-    <string name="UnifiedPushKeepAliveInfo">“通知和声音”里的“保持连接服务”和“后台连接”会在没有推送的情况下让 Telegram 保持连接。本版本默认开启这两项，它们不会显示通知。</string>
-    <string name="UnifiedPushKeepAliveRegistered">UnifiedPush 已注册，可以在那里把它们关掉以省电。</string>
+    <string name="UnifiedPushKeepAliveInfo">“通知和声音”里的“保持连接服务”和“后台连接”在 Android 8 及以上只是尽力而为，系统可能在后台停掉它们。没有它们时只有推送能唤醒应用，来电还依赖电池优化白名单。</string>
+    <string name="UnifiedPushKeepAliveRegistered">UnifiedPush 已注册，可以把这些选项关掉以省电。</string>
     <string name="UnifiedPushStatusDisabled">已关闭</string>
     <string name="UnifiedPushStatusNoDistributor">请选择分发器</string>
     <string name="UnifiedPushStatusWaiting">等待分发器</string>
     <string name="UnifiedPushStatusRegistered">已注册</string>
     <string name="UnifiedPushStatusFailed">失败：%1$s</string>
     <string name="UnifiedPushStatusUnregistered">已被分发器移除</string>
+    <string name="UnifiedPushTestBadEndpoint">推送地址不是有效的 http(s) 网址。</string>
+    <string name="UnifiedPushStatusDistributorMissing">分发器未安装</string>
 </resources>
