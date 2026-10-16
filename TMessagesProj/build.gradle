@@ -1,6 +1,7 @@
 import org.gradle.nativeplatform.platform.internal.DefaultNativePlatform
 
 apply plugin: 'com.android.library'
+apply plugin: 'kotlin-android' // Fork: new code (UnifiedPush) is written in Kotlin
 apply plugin: 'org.telegram.build-plugin'
 apply plugin: 'idea'
 
@@ -59,7 +60,6 @@ dependencies {
     implementation 'androidx.car.app:app:1.4.0'
     implementation 'androidx.car.app:app-projected:1.4.0'
     implementation 'org.nanohttpd:nanohttpd:2.3.1'
-
     compileOnly 'org.checkerframework:checker-qual:2.5.2'
     compileOnly 'org.checkerframework:checker-compat-qual:2.5.0'
     implementation 'com.google.firebase:firebase-datatransport:18.1.0'
@@ -130,6 +130,10 @@ android {
         targetCompatibility JavaVersion.VERSION_1_8
 
         coreLibraryDesugaringEnabled true
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8' // same as compileOptions above
     }
 
     defaultConfig {
