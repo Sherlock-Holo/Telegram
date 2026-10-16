@@ -46,6 +46,7 @@ import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.NotificationsController;
 import org.telegram.messenger.R;
 import org.telegram.messenger.SharedConfig;
+import org.telegram.messenger.UnifiedPushManager;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.Utilities;
 import org.telegram.tgnet.ConnectionsManager;
@@ -101,6 +102,7 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
     private int accountsAllRow;
     private int accountsInfoRow;
 
+    private int unifiedPushRow; // Fork: UnifiedPush
     private int notificationsServiceRow;
     private int notificationsServiceConnectionRow;
 
@@ -213,6 +215,7 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
         otherSection2Row = rowCount++;
 
         otherSectionRow = rowCount++;
+        unifiedPushRow = rowCount++;
         notificationsServiceRow = rowCount++;
         notificationsServiceConnectionRow = rowCount++;
         androidAutoAlertRow = -1;
@@ -754,6 +757,8 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
                         }
                     }
                 }
+            } else if (position == unifiedPushRow) {
+                presentFragment(new UnifiedPushSettingsActivity());
             } else if (position == notificationsServiceRow) {
                 SharedPreferences preferences = MessagesController.getNotificationsSettings(currentAccount);
                 enabled = preferences.getBoolean("pushService", getMessagesController().keepAliveService);
@@ -1168,6 +1173,8 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
                             textCell.setTextAndValue(getString("Vibrate", R.string.Vibrate), getString("OnlyIfSilent", R.string.OnlyIfSilent), updateVibrate, true);
                         }
                         updateVibrate = false;
+                    } else if (position == unifiedPushRow) {
+                        textCell.setTextAndValue(getString(R.string.UnifiedPush), UnifiedPushSettingsActivity.statusText(UnifiedPushManager.getStatus()), true);
                     } else if (position == repeatRow) {
                         int minutes = preferences.getInt("repeat_messages", 60);
                         String value;
