@@ -100,29 +100,40 @@ object UnifiedPushManager {
     @JvmStatic
     fun getPushCount(): Long = prefs().getLong(KEY_PUSH_COUNT, 0)
 
-    /** Provider.hasServices(): UP is on and the chosen distributor is still installed. */
+    /**
+     * Provider.hasServices(): UP is on and the chosen distributor is still installed. When the installed
+     * distributors can't be determined (see [getDistributors]) it is assumed to still be installed.
+     */
     @JvmStatic
     fun isActive(): Boolean {
         if (!isEnabled()) return false
         val distributor = getDistributor() ?: return false
-        return getDistributors().contains(distributor)
+        return getDistributors()?.contains(distributor) ?: true
     }
 
-    /** UP is on and a distributor was picked, but that app is not installed (anymore). */
+    /**
+     * UP is on and a distributor was picked, but that app is definitely not installed (anymore).
+     * False when the list of distributors is unknown: a transient PackageManager failure must not wipe
+     * the endpoint and revoke the token at Telegram.
+     */
     @JvmStatic
     fun isDistributorMissing(): Boolean {
         if (!isEnabled()) return false
         val distributor = getDistributor() ?: return false
-        return !getDistributors().contains(distributor)
+        return getDistributors()?.contains(distributor) == false
     }
 
-    /** Package names of installed UnifiedPush distributors (needs the connector's `<queries>` on Android 11+). */
+    /**
+     * Package names of installed UnifiedPush distributors (needs the connector's `<queries>` on Android 11+),
+     * or null when they could not be determined (the query threw). null is "unknown", an empty list is
+     * "there are none".
+     */
     @JvmStatic
-    fun getDistributors(): List<String> = try {
+    fun getDistributors(): List<String>? = try {
         UnifiedPush.getDistributors(ApplicationLoader.applicationContext)
     } catch (e: Throwable) {
         FileLog.e(e)
-        emptyList()
+        null
     }
 
     @JvmStatic
@@ -202,7 +213,7 @@ object UnifiedPushManager {
     fun setEnabled(enabled: Boolean) {
         if (enabled) {
             prefs().edit().putBoolean(KEY_ENABLED, true).remove(KEY_UNREGISTERED).apply()
-            val distributors = getDistributors()
+            val distributors = getDistributors() ?: emptyList() // unknown: don't auto-pick
             if (getDistributor().let { it == null || !distributors.contains(it) } && distributors.size == 1) {
                 prefs().edit().putString(KEY_DISTRIBUTOR, distributors[0]).apply()
             }
