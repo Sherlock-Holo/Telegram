@@ -2503,7 +2503,7 @@
     <!-- Fork: UnifiedPush -->
     <string name="UnifiedPush">UnifiedPush</string>
     <string name="UnifiedPushEnable">Use UnifiedPush</string>
-    <string name="UnifiedPushInfo">Receive notifications through a UnifiedPush distributor (for example ntfy) instead of Google services. Telegram only uses it as a wake-up signal; message content never goes through the distributor.</string>
+    <string name="UnifiedPushInfo">Receive notifications through a UnifiedPush distributor instead of Google services. Telegram only uses it as a wake-up signal; message content never goes through the distributor. Only distributors that accept PUT requests (for example ntfy) work: Telegram sends PUT and there is no gateway.</string>
     <string name="UnifiedPushDistributor">Distributor</string>
     <string name="UnifiedPushNoDistributors">No UnifiedPush distributor is installed. Install one, for example ntfy, and come back.</string>
     <string name="UnifiedPushDistributorMissing">The selected distributor (%1$s) is no longer installed.</string>
@@ -2528,6 +2528,9 @@
     <string name="UnifiedPushTestNoEndpoint">No endpoint yet. Wait for the distributor to register first.</string>
     <string name="UnifiedPushTestSent">Test push sent (HTTP %1$d).</string>
     <string name="UnifiedPushTestFailed">Test push failed: %1$s</string>
+    <string name="UnifiedPushTestNoPut">The distributor does not accept PUT requests, which is what Telegram sends. Real pushes will not arrive; this distributor would need a gateway.</string>
+    <string name="UnifiedPushKeepAliveInfo">The Keep-Alive Service and Background Connection options in Notifications and Sounds keep Telegram connected without any push. Both are on by default in this build, and they do not show a notification.</string>
+    <string name="UnifiedPushKeepAliveRegistered">UnifiedPush is registered, so you can turn them off there to save battery.</string>
     <string name="UnifiedPushStatusDisabled">Off</string>
     <string name="UnifiedPushStatusNoDistributor">Choose a distributor</string>
     <string name="UnifiedPushStatusWaiting">Waiting for the distributor</string>
