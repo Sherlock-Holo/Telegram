@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fork: UnifiedPush -->
+    <string name="UnifiedPush">UnifiedPush</string>
+    <string name="UnifiedPushEnable">使用 UnifiedPush</string>
+    <string name="UnifiedPushInfo">通过 UnifiedPush 分发器（例如 ntfy）接收通知，而不是 Google 服务。Telegram 仅把它当作唤醒信号，消息内容不会经过分发器。</string>
+    <string name="UnifiedPushDistributor">分发器</string>
+    <string name="UnifiedPushNoDistributors">未安装 UnifiedPush 分发器。请先安装一个（例如 ntfy）再回来。</string>
+    <string name="UnifiedPushDistributorMissing">所选分发器（%1$s）已不再安装。</string>
+    <string name="UnifiedPushDistributorInfo">负责把推送消息送到本设备的应用。</string>
+    <string name="UnifiedPushState">状态</string>
+    <string name="UnifiedPushStatus">状态</string>
+    <string name="UnifiedPushEndpoint">推送地址</string>
+    <string name="UnifiedPushNone">无</string>
+    <string name="UnifiedPushTelegramRegistration">在 Telegram 的注册情况</string>
+    <string name="UnifiedPushAccountsOf">%1$d / %2$d 个账号</string>
+    <string name="UnifiedPushLastPush">最近一次推送</string>
+    <string name="UnifiedPushNever">从未</string>
+    <string name="UnifiedPushLastPushValue">%1$s（共 %2$d 次）</string>
+    <string name="UnifiedPushStateInfo">点按推送地址可复制。</string>
+    <string name="UnifiedPushTest">发送测试推送</string>
+    <string name="UnifiedPushReregister">重新注册</string>
+    <string name="UnifiedPushUnregister">注销并关闭</string>
+    <string name="UnifiedPushTestInfo">测试会像 Telegram 一样向你自己的推送地址发送请求。如果“最近一次推送”时间更新，说明整条链路正常。</string>
+    <string name="UnifiedPushBattery">关闭电池优化</string>
+    <string name="UnifiedPushBatteryInfo">没有电池优化豁免时，系统可能在设备空闲时延迟推送。分发器应用也需要豁免。</string>
+    <string name="UnifiedPushEndpointCopied">推送地址已复制到剪贴板。</string>
+    <string name="UnifiedPushTestNoEndpoint">还没有推送地址，请等待分发器完成注册。</string>
+    <string name="UnifiedPushTestSent">测试推送已发送（HTTP %1$d）。</string>
+    <string name="UnifiedPushTestFailed">测试推送失败：%1$s</string>
+    <string name="UnifiedPushStatusDisabled">已关闭</string>
+    <string name="UnifiedPushStatusNoDistributor">请选择分发器</string>
+    <string name="UnifiedPushStatusWaiting">等待分发器</string>
+    <string name="UnifiedPushStatusRegistered">已注册</string>
+    <string name="UnifiedPushStatusFailed">失败：%1$s</string>
+    <string name="UnifiedPushStatusUnregistered">已被分发器移除</string>
+</resources>
