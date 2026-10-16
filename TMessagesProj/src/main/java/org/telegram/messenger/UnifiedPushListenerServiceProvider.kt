@@ -7,7 +7,12 @@ package org.telegram.messenger
  */
 object UnifiedPushListenerServiceProvider : PushListenerController.IPushListenerServiceProvider {
 
-    override fun hasServices(): Boolean = UnifiedPushManager.isActive()
+    override fun hasServices(): Boolean {
+        // Only called from initPushServices(), after the configs are loaded. UP is on but its distributor
+        // was uninstalled: drop the dead endpoint and revoke the token at Telegram (no-op afterwards).
+        if (UnifiedPushManager.isDistributorMissing()) UnifiedPushManager.onDistributorMissing()
+        return UnifiedPushManager.isActive()
+    }
 
     override fun getLogTitle(): String = "UnifiedPush"
 

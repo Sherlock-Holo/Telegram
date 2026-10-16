@@ -41,6 +41,7 @@ object UnifiedPushManager {
     const val STATUS_REGISTERED = 3
     const val STATUS_FAILED = 4
     const val STATUS_UNREGISTERED_BY_DISTRIBUTOR = 5
+    const val STATUS_DISTRIBUTOR_MISSING = 6
 
     private const val INSTANCE = "default"
     private const val PREFS = "unifiedpush"
@@ -51,8 +52,6 @@ object UnifiedPushManager {
     private const val KEY_LAST_PUSH = "lastPush"
     private const val KEY_PUSH_COUNT = "pushCount"
     private const val KEY_UNREGISTERED = "unregistered"
-    // Distributor that handed out the stored endpoint; an UNREGISTERED only counts for that one.
-    private const val KEY_ENDPOINT_DISTRIBUTOR = "endpointDistributor"
     // Last token that was sent to Telegram (registerDevice). Kept here, independent of SharedConfig,
     // so unregisterDevice still works when the process was cold or the local endpoint is already gone.
     private const val KEY_TELEGRAM_TOKEN = "telegramToken"
@@ -109,6 +108,14 @@ object UnifiedPushManager {
         return getDistributors().contains(distributor)
     }
 
+    /** UP is on and a distributor was picked, but that app is not installed (anymore). */
+    @JvmStatic
+    fun isDistributorMissing(): Boolean {
+        if (!isEnabled()) return false
+        val distributor = getDistributor() ?: return false
+        return !getDistributors().contains(distributor)
+    }
+
     /** Package names of installed UnifiedPush distributors (needs the connector's `<queries>` on Android 11+). */
     @JvmStatic
     fun getDistributors(): List<String> = try {
@@ -132,6 +139,7 @@ object UnifiedPushManager {
         return when {
             !p.getBoolean(KEY_ENABLED, false) -> STATUS_DISABLED
             getDistributor() == null -> STATUS_NO_DISTRIBUTOR
+            isDistributorMissing() -> STATUS_DISTRIBUTOR_MISSING
             !p.getString(KEY_ENDPOINT, "").isNullOrEmpty() -> STATUS_REGISTERED
             p.getBoolean(KEY_UNREGISTERED, false) -> STATUS_UNREGISTERED_BY_DISTRIBUTOR
             !p.getString(KEY_ERROR, null).isNullOrEmpty() -> STATUS_FAILED
@@ -234,33 +242,51 @@ object UnifiedPushManager {
 
     // ---------------------------------------- provider entry (app start)
 
-    /** Called from the push provider on every process start; only talks to the distributor if needed. */
+    /**
+     * Called from the push provider on every process start (after SharedConfig/UserConfig are loaded).
+     * Always asks the connector to register: it reuses the existing token and the distributor answers
+     * with NEW_ENDPOINT again, so a subscription that was lost on the distributor side (its data was
+     * cleared, it was reinstalled) is recreated. onNewEndpoint() short-circuits when nothing changed.
+     */
     @JvmStatic
     fun ensureRegistered() {
         if (!isActive()) return
-        val endpoint = getEndpoint()
-        val ack = getDistributor() == UnifiedPush.getAckDistributor(ApplicationLoader.applicationContext)
-        if (endpoint.isNotEmpty() && ack && SharedConfig.pushType == TOKEN_TYPE && SharedConfig.pushString == buildToken(endpoint)) {
-            return // nothing changed since the last run; MessagesController.registerForPush() keeps Telegram in sync
-        }
         register()
+    }
+
+    /**
+     * Called by the provider's hasServices() when UP is enabled but the selected distributor is gone.
+     * Nothing can reach us any more, so the endpoint is dead: forget it and revoke the token at Telegram
+     * (once; a no-op when nothing is registered). The enabled flag and the chosen package stay, so
+     * reinstalling the distributor and restarting the app registers again.
+     */
+    @JvmStatic
+    fun onDistributorMissing() {
+        val stale = getEndpoint().isNotEmpty() ||
+            !prefs().getString(KEY_TELEGRAM_TOKEN, null).isNullOrEmpty() ||
+            (SharedConfig.pushType == TOKEN_TYPE && !SharedConfig.pushString.isNullOrEmpty())
+        if (!stale) return
+        cancelRetry()
+        prefs().edit().remove(KEY_ENDPOINT).remove(KEY_ERROR).remove(KEY_UNREGISTERED).apply()
+        revokeTelegramToken()
+        notifyChanged()
     }
 
     // ----------------------------------------------- connector callbacks
 
     internal fun onNewEndpoint(endpoint: String) {
         if (!isEnabled()) {
-            // The distributor re-announced an endpoint after the user switched us off: tell it to stop.
-            try {
-                UnifiedPush.unregister(ApplicationLoader.applicationContext, INSTANCE)
-            } catch (e: Throwable) {
-                FileLog.e(e)
-            }
+            rejectEndpoint()
             return
         }
         // The broadcast may have started a cold process: load SharedConfig/UserConfig first, like the
         // official FCM onNewToken() does (postInitApplication() is a no-op when already initialized).
         runInitialized {
+            // The user may have switched UP off while this was queued.
+            if (!isEnabled()) {
+                rejectEndpoint()
+                return@runInitialized
+            }
             cancelRetry()
             val p = prefs()
             val old = getEndpoint()
@@ -272,7 +298,6 @@ object UnifiedPushManager {
             stale.remove(token)
             p.edit()
                 .putString(KEY_ENDPOINT, endpoint)
-                .putString(KEY_ENDPOINT_DISTRIBUTOR, getDistributor())
                 .putString(KEY_TELEGRAM_TOKEN, token)
                 .remove(KEY_ERROR).remove(KEY_UNREGISTERED).apply()
             Utilities.stageQueue.postRunnable {
@@ -293,6 +318,15 @@ object UnifiedPushManager {
         }
     }
 
+    /** The distributor announced an endpoint while UP is off: tell it to stop. */
+    private fun rejectEndpoint() {
+        try {
+            UnifiedPush.unregister(ApplicationLoader.applicationContext, INSTANCE)
+        } catch (e: Throwable) {
+            FileLog.e(e)
+        }
+    }
+
     internal fun onRegistrationFailed(reason: FailedReason?) {
         val name = reason?.name ?: "UNKNOWN"
         prefs().edit().putString(KEY_ERROR, name).apply()
@@ -306,23 +340,23 @@ object UnifiedPushManager {
     }
 
     /**
-     * UNREGISTERED from the connector. The callback only carries the instance (always [INSTANCE]), so
-     * "is this the distributor we are using" is decided from our state: it only counts while we hold
-     * an endpoint that was handed out by the currently selected distributor. That drops the echo of our
-     * own unregister() (dropRegistration() clears the endpoint synchronously first, so a distributor
-     * switch or re-register is not mistaken for the distributor dropping us), and the connector itself
-     * discards messages carrying the token of a registration that no longer exists.
+     * UNREGISTERED from the connector, i.e. the distributor says our subscription is gone (the user
+     * removed it inside the distributor, the distributor was reset ...). The callback only carries the
+     * instance, never the sender. We do not need it: the connector's MessagingReceiver.onReceive looks
+     * the broadcast's token up and drops events for registrations that no longer exist, so a late
+     * UNREGISTERED from a previous distributor/registration never gets here, and unregister() does not
+     * send us a local UNREGISTERED. What is left to check is whether we hold an endpoint at all.
+     * The connector sends a local UNREGISTERED itself when the saved distributor is not installed
+     * anymore; that is covered by the same check (and by onDistributorMissing()).
      */
     internal fun onUnregistered() {
-        if (!isEnabled()) return
-        val p = prefs()
-        val current = getDistributor()
-        if (getEndpoint().isEmpty() || current == null || p.getString(KEY_ENDPOINT_DISTRIBUTOR, null) != current) return
+        if (!isEnabled() || getEndpoint().isEmpty()) return
         runInitialized {
-            // The distributor dropped us (app removed inside the distributor, distributor reset ...): the
-            // endpoint is dead, so stop Telegram from pushing to it. Re-subscribing happens on the next app
-            // start (ensureRegistered) or from the settings screen, not in a loop here.
-            prefs().edit().remove(KEY_ENDPOINT).remove(KEY_ENDPOINT_DISTRIBUTOR).putBoolean(KEY_UNREGISTERED, true).apply()
+            // Re-check: the user may have switched UP off or re-registered while this was queued.
+            if (!isEnabled() || getEndpoint().isEmpty()) return@runInitialized
+            // The endpoint is dead, so stop Telegram from pushing to it. Re-subscribing happens on the next
+            // app start (ensureRegistered) or from the settings screen, not in a loop here.
+            prefs().edit().remove(KEY_ENDPOINT).putBoolean(KEY_UNREGISTERED, true).apply()
             revokeTelegramToken()
             notifyChanged()
         }
@@ -358,9 +392,9 @@ object UnifiedPushManager {
         val uri = try { Uri.parse(endpoint) } catch (e: Throwable) { null }
         val scheme = uri?.scheme?.lowercase()
         if ((scheme != "http" && scheme != "https") || uri?.host.isNullOrEmpty()) {
-            throw IOException("endpoint is not an http(s) URL")
+            throw IOException(LocaleController.getString(R.string.UnifiedPushTestBadEndpoint))
         }
-        val connection = (URL(endpoint).openConnection() as? HttpURLConnection) ?: throw IOException("endpoint is not an http(s) URL")
+        val connection = (URL(endpoint).openConnection() as? HttpURLConnection) ?: throw IOException(LocaleController.getString(R.string.UnifiedPushTestBadEndpoint))
         try {
             connection.requestMethod = "PUT"
             connection.instanceFollowRedirects = false
@@ -397,7 +431,7 @@ object UnifiedPushManager {
         } catch (e: Throwable) {
             FileLog.e(e)
         }
-        prefs().edit().remove(KEY_ENDPOINT).remove(KEY_ENDPOINT_DISTRIBUTOR).remove(KEY_ERROR).remove(KEY_UNREGISTERED).apply()
+        prefs().edit().remove(KEY_ENDPOINT).remove(KEY_ERROR).remove(KEY_UNREGISTERED).apply()
         revokeTelegramToken()
     }
 
