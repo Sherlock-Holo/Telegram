@@ -489,6 +489,16 @@
             android:exported="true"
             android:foregroundServiceType="dataSync"
         />
+        <!-- Fork: UnifiedPush. The connector library ships its own exported MessagingReceiverImpl
+             (MESSAGE / NEW_ENDPOINT / REGISTRATION_FAILED / UNREGISTERED) and the <queries> for distributor
+             discovery; it forwards events to this (non-exported) service via PUSH_EVENT. -->
+        <service
+            android:name=".UnifiedPushReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />
+            </intent-filter>
+        </service>
         <service
             android:name=".NotificationRepeat"
             android:exported="false"
