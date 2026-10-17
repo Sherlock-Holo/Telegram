@@ -1,0 +1,163 @@
+name: Android CI
+
+# Fork CI (Sherlock-Holo/Telegram, branch holo-fork):
+#   - x86_64 debug              -> for the Android Studio emulator
+#   - arm64-v8a debug           -> for a phone
+#   - arm64-v8a release, UNSIGNED -> for a phone, sign it yourself (see .github/CI.md, "Signing")
+# Each variant builds a single ABI (-Pandroid.injected.build.abi), one job each, all in parallel.
+# No secrets are used anywhere in this workflow.
+
+on:
+  push:
+    branches: [holo-fork]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NDK_VERSION: 27.2.12479018   # TMessagesProj_App/build.gradle defaultConfig.ndkVersion
+  CMAKE_VERSION: 3.22.1        # TMessagesProj_App/build.gradle externalNativeBuild.cmake.version
+  BUILD_TOOLS_VERSION: 36.0.0  # compileSdk / buildToolsVersion 36
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x86_64-debug
+            abi: x86_64
+            variant: debug
+            task: :TMessagesProj_App:assembleAfatDebug
+            extra_args: ""
+          - name: arm64-v8a-debug
+            abi: arm64-v8a
+            variant: debug
+            task: :TMessagesProj_App:assembleAfatDebug
+            extra_args: ""
+          - name: arm64-v8a-release-unsigned
+            abi: arm64-v8a
+            variant: release-unsigned
+            task: :TMessagesProj_App:assembleAfatRelease
+            extra_args: -PunsignedRelease=true
+    env:
+      # ccache in front of the NDK compilers. CMake (>= 3.17) reads these environment variables as the
+      # initial value of CMAKE_<LANG>_COMPILER_LAUNCHER, so no Gradle/CMake file has to change.
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      # The NDK is freshly installed on every run (new mtimes), so key the compiler check on its version.
+      CCACHE_COMPILERCHECK: string:ndk-27.2.12479018
+      CCACHE_MAXSIZE: 1500M
+
+    steps:
+      - name: Free disk space
+        run: |
+          # Not needed for an Android build; frees ~20 GB on the runner.
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install Android SDK components
+        run: |
+          set -euo pipefail
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install \
+            "platforms;android-36" \
+            "build-tools;${BUILD_TOOLS_VERSION}" \
+            "ndk;${NDK_VERSION}" \
+            "cmake;${CMAKE_VERSION}" > /dev/null
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          # holo-fork is not the default branch, so allow it (but not PRs) to write the cache.
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+
+      - name: Resolve build classpath (retry)
+        run: |
+          # The root buildscript pulls the Huawei AGConnect plugin from developer.huawei.com/repo, which
+          # sometimes answers 502. Resolving it is cheap, so retry before starting the long build.
+          for i in 1 2 3 4; do
+            ./gradlew help --console=plain && exit 0
+            echo "attempt $i failed, retrying in 30s" >&2
+            sleep 30
+          done
+          exit 1
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ matrix.name }}
+          max-size: 1500M
+
+      - name: Build ${{ matrix.name }}
+        run: |
+          ./gradlew ${{ matrix.task }} \
+            -Pandroid.injected.build.abi=${{ matrix.abi }} \
+            ${{ matrix.extra_args }} \
+            -Dorg.gradle.jvmargs="-Xmx5g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8" \
+            --stacktrace --console=plain
+
+      - name: ccache statistics
+        if: always()
+        run: ccache -s || true
+
+      - name: Check and name the APK
+        id: apk
+        run: |
+          set -euo pipefail
+          BT="$ANDROID_HOME/build-tools/${BUILD_TOOLS_VERSION}"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          case "${{ matrix.variant }}" in
+            debug)            T=debug ;;
+            release-unsigned) T=release ;;
+          esac
+          # With -Pandroid.injected.build.abi AGP leaves the APK under build/intermediates, otherwise under build/outputs.
+          SRC=$(ls "TMessagesProj_App/build/intermediates/apk/afat/$T/app.apk" "TMessagesProj_App/build/outputs/apk/afat/$T/app.apk" 2>/dev/null | head -n1)
+          test -n "$SRC"
+          mkdir -p dist
+          OUT="dist/holo-telegram-${{ matrix.abi }}-${{ matrix.variant }}-${SHORT_SHA}.apk"
+          cp "$SRC" "$OUT"
+          echo "path=$OUT" >> "$GITHUB_OUTPUT"
+          echo "name=holo-telegram-${{ matrix.abi }}-${{ matrix.variant }}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          ls -l "$OUT"
+          "$BT/aapt2" dump badging "$OUT" | grep -E "^package|native-code"
+          # Only the requested ABI may be inside the APK.
+          unzip -Z1 "$OUT" | grep '^lib/' | cut -d/ -f2 | sort -u | tee /tmp/abis
+          test "$(cat /tmp/abis)" = "${{ matrix.abi }}"
+          if [ "${{ matrix.variant }}" = "release-unsigned" ]; then
+            # Must NOT be signed: apksigner verify has to fail.
+            if "$BT/apksigner" verify "$OUT"; then echo "release APK is signed, expected unsigned" >&2; exit 1; fi
+          else
+            "$BT/apksigner" verify --print-certs "$OUT"
+          fi
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error
+          retention-days: 14
