@@ -66,13 +66,13 @@ jobs:
           df -h /
 
       - name: Checkout (with submodules)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           submodules: recursive
           fetch-depth: 1
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
@@ -135,23 +135,41 @@ jobs:
             release-unsigned) T=release ;;
           esac
           # With -Pandroid.injected.build.abi AGP leaves the APK under build/intermediates, otherwise under build/outputs.
-          SRC=$(ls "TMessagesProj_App/build/intermediates/apk/afat/$T/app.apk" "TMessagesProj_App/build/outputs/apk/afat/$T/app.apk" 2>/dev/null | head -n1)
-          test -n "$SRC"
+          SRC=""
+          for f in "TMessagesProj_App/build/intermediates/apk/afat/$T/app.apk" "TMessagesProj_App/build/outputs/apk/afat/$T/app.apk"; do
+            if [ -f "$f" ]; then
+              SRC="$f"
+              break
+            fi
+          done
+          if [ -z "$SRC" ]; then
+            echo "APK not found in expected locations:" >&2
+            find TMessagesProj_App/build -name '*.apk'
+            exit 1
+          fi
           mkdir -p dist
           OUT="dist/holo-telegram-${{ matrix.abi }}-${{ matrix.variant }}-${SHORT_SHA}.apk"
           cp "$SRC" "$OUT"
           echo "path=$OUT" >> "$GITHUB_OUTPUT"
           echo "name=holo-telegram-${{ matrix.abi }}-${{ matrix.variant }}-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
           ls -l "$OUT"
-          "$BT/aapt2" dump badging "$OUT" | grep -E "^package|native-code"
+          BADGING=$("$BT/aapt2" dump badging "$OUT")
+          grep -E '^package|native-code' <<<"$BADGING" || true
+          case "$BADGING" in
+            *io.holo.telegram*) ;;
+            *) echo "unexpected package name" >&2; exit 1 ;;
+          esac
           # Only the requested ABI may be inside the APK.
-          unzip -Z1 "$OUT" | grep '^lib/' | cut -d/ -f2 | sort -u | tee /tmp/abis
-          test "$(cat /tmp/abis)" = "${{ matrix.abi }}"
+          ABIS=$(unzip -Z1 "$OUT" | { grep '^lib/' || true; } | cut -d/ -f2 | sort -u | tr '\n' ' ' | xargs)
+          if [ "$ABIS" != "${{ matrix.abi }}" ]; then
+            echo "expected ABI [${{ matrix.abi }}] but found [$ABIS]" >&2
+            exit 1
+          fi
           if [ "${{ matrix.variant }}" = "release-unsigned" ]; then
             # Must NOT be signed: apksigner verify has to fail.
             if "$BT/apksigner" verify "$OUT"; then echo "release APK is signed, expected unsigned" >&2; exit 1; fi
           else
-            "$BT/apksigner" verify --print-certs "$OUT"
+            "$BT/apksigner" verify --print-certs "$OUT" 2>/dev/null
           fi
 
       - name: Upload APK
