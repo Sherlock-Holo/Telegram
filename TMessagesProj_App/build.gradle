@@ -65,6 +65,13 @@ android {
     packagingOptions {
         jniLibs {
             useLegacyPackaging = true
+            // Fork CI: with -Pandroid.injected.build.abi=<abi> (single-ABI build) also drop the prebuilt libs of the
+            // other ABIs (e.g. ML Kit's liblanguage_id_l2c_jni.so), so the APK really contains one ABI only.
+            def onlyAbi = project.findProperty('android.injected.build.abi')
+            if (onlyAbi) {
+                def keep = onlyAbi.toString().split(',')*.trim()
+                ['armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'].findAll { !keep.contains(it) }.each { excludes.add("lib/${it}/**".toString()) }
+            }
         }
     }
 
@@ -96,7 +103,9 @@ android {
         release {
             debuggable false
             jniDebuggable false
-            signingConfig signingConfigs.release
+            // Fork CI: -PunsignedRelease=true leaves the release APK unsigned (no keystore involved),
+            // so it can be signed afterwards with zipalign + apksigner. Default: unchanged.
+            signingConfig project.hasProperty('unsignedRelease') ? null : signingConfigs.release
             minifyEnabled true
             shrinkResources true
             multiDexEnabled true
