@@ -14,6 +14,12 @@ Gradle changes (`TMessagesProj_App/build.gradle`, defaults unchanged): `-Punsign
 With the injected-ABI property AGP leaves the APK in `build/intermediates/apk/afat/<type>/app.apk`
 (not `build/outputs`); the workflow handles both.
 
+**`-Pandroid.injected.testOnly=false` is mandatory** whenever `-Pandroid.injected.build.abi` is used. AGP's
+`isTestApk` returns true when `android.injected.build.abi` is set and `android.injected.testOnly` is not, so the
+manifest gets `android:testOnly="true"` (debug and release alike) and phones refuse the install
+(`INSTALL_FAILED_TEST_ONLY`, shown by some ROMs as a bare `-15`). The workflow passes it and fails the job if
+`aapt2 dump badging` still reports `testOnly`.
+
 ## Signing
 
 Nothing in the workflow uses secrets.
