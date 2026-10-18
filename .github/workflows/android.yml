@@ -5,6 +5,7 @@ name: Android CI
 #   - arm64-v8a debug           -> for a phone
 #   - arm64-v8a release, UNSIGNED -> for a phone, sign it yourself (see .github/CI.md, "Signing")
 # Each variant builds a single ABI (-Pandroid.injected.build.abi), one job each, all in parallel.
+# -Pandroid.injected.testOnly=false is required next to it: AGP otherwise stamps android:testOnly="true".
 # No secrets are used anywhere in this workflow.
 
 on:
@@ -116,6 +117,7 @@ jobs:
         run: |
           ./gradlew ${{ matrix.task }} \
             -Pandroid.injected.build.abi=${{ matrix.abi }} \
+            -Pandroid.injected.testOnly=false \
             ${{ matrix.extra_args }} \
             -Dorg.gradle.jvmargs="-Xmx5g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8" \
             --stacktrace --console=plain
@@ -159,6 +161,13 @@ jobs:
             *io.holo.telegram*) ;;
             *) echo "unexpected package name" >&2; exit 1 ;;
           esac
+          # AGP marks every APK built with -Pandroid.injected.build.abi as android:testOnly="true" (it treats the
+          # property as an IDE "Run" build), which phones refuse to install (INSTALL_FAILED_TEST_ONLY).
+          # -Pandroid.injected.testOnly=false in the build step prevents that; fail loudly if it ever comes back.
+          if grep -q "testOnly='-1'" <<<"$BADGING"; then
+            echo "APK is android:testOnly=true, phones will refuse to install it" >&2
+            exit 1
+          fi
           # Only the requested ABI may be inside the APK.
           ABIS=$(unzip -Z1 "$OUT" | { grep '^lib/' || true; } | cut -d/ -f2 | sort -u | tr '\n' ' ' | xargs)
           if [ "$ABIS" != "${{ matrix.abi }}" ]; then
