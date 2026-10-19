@@ -2670,6 +2670,14 @@
     <string name="LargeEmoji">Large Emoji</string>
     <string name="EmojiStyle">Emoji style</string>
     <string name="EmojiStyleDefault">Default</string>
+    <string name="EmojiStyleImport">Import from file…</string>
+    <string name="EmojiStyleImporting">Importing emoji pack…</string>
+    <string name="EmojiStyleImported">Emoji pack “%1$s” imported and selected</string>
+    <string name="EmojiStyleImportFailed">Could not import the emoji pack: %1$s</string>
+    <string name="EmojiStyleDelete">Delete a pack…</string>
+    <string name="EmojiStyleDeleteConfirm">Delete the emoji pack “%1$s” from this device? The built-in packs stay available.</string>
+    <string name="EmojiStyleBuiltIn">%1$s (built-in)</string>
+    <string name="EmojiStyleDeleteFailed">Could not delete the emoji pack “%1$s”</string>
     <string name="TelegramVersion">Telegram for Android %1$s</string>
     <string name="DebugMenu">Debug Menu</string>
     <string name="DebugMenuLongPress">Long press again for debug menu</string>

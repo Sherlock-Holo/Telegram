@@ -39,4 +39,14 @@
     <string name="UnifiedPushStatusUnregistered">已被分发器移除</string>
     <string name="UnifiedPushTestBadEndpoint">推送地址不是有效的 http(s) 网址。</string>
     <string name="UnifiedPushStatusDistributorMissing">分发器未安装</string>
+    <string name="EmojiStyle">表情样式</string>
+    <string name="EmojiStyleDefault">默认</string>
+    <string name="EmojiStyleImport">从文件导入…</string>
+    <string name="EmojiStyleImporting">正在导入表情包…</string>
+    <string name="EmojiStyleImported">已导入并选用表情包“%1$s”</string>
+    <string name="EmojiStyleImportFailed">无法导入表情包：%1$s</string>
+    <string name="EmojiStyleDelete">删除表情包…</string>
+    <string name="EmojiStyleDeleteConfirm">要从本机删除表情包“%1$s”吗？内置表情包不受影响。</string>
+    <string name="EmojiStyleBuiltIn">%1$s（内置）</string>
+    <string name="EmojiStyleDeleteFailed">无法删除表情包“%1$s”</string>
 </resources>
