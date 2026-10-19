@@ -25,13 +25,17 @@ manifest gets `android:testOnly="true"` (debug and release alike) and phones ref
 The public api_id 4 is rejected by Telegram (`API_ID_PUBLISHED_FLOOD`), so the app needs your own pair from
 my.telegram.org. They are not stored in the repo: `TMessagesProj/build.gradle` reads `TG_APP_ID` / `TG_APP_HASH`
 (Gradle property or environment variable), puts them into `BuildConfig.APP_ID` / `APP_HASH`, and
-`BuildVars` uses those. Configuration (`gradlew tasks`, Android Studio sync) works without them; the build (`preBuild`) fails with a clear message when either is missing or malformed (id: digits,
-hash: 32 hex chars). For a throwaway debug build with the public key add `-PallowPublicApiKey=true` (login will
+`BuildVars` uses those. Configuration (`gradlew tasks`, Android Studio sync) works without them; the build
+(`preBuild`) fails with a clear message when either is missing or malformed (id: digits, hash: 32 hex chars). For a throwaway debug build with the public key add `-PallowPublicApiKey=true` (login will
 most likely fail).
 
-- CI: add repository secrets `TG_APP_ID` and `TG_APP_HASH` (Settings > Secrets and variables > Actions). The workflow
-  passes them as environment variables and checks first that they exist. Pull requests from forks get no secrets,
-  so they fail on purpose.
+- CI: the workflow passes `${{ secrets.TG_APP_ID || <fallback> }}` / `${{ secrets.TG_APP_HASH || <fallback> }}`. The
+  fallback is a **community key** (the one Mercurygram publishes in its F-Droid recipe), a **temporary measure**:
+  it is shared with other people, can be rate-limited or revoked by its owner at any time, and using someone
+  else's key is against Telegram's API terms. Set repository secrets `TG_APP_ID` and `TG_APP_HASH`
+  (Settings > Secrets and variables > Actions) with your own key to override it; no workflow change is needed.
+  Both secrets must be set to be used (if only one is set, the fallback is used for the pair and the job warns).
+  Pull requests from forks get no secrets and therefore always use the fallback.
 - Local, either way:
   - environment variables: `TG_APP_ID=... TG_APP_HASH=... ./gradlew ...`
   - `~/.gradle/gradle.properties` (not in the repo): `TG_APP_ID=...` and `TG_APP_HASH=...`, or `-PTG_APP_ID=...
@@ -43,7 +47,7 @@ most likely fail).
 
 ## Signing
 
-The only secrets the workflow needs for building are `TG_APP_ID` / `TG_APP_HASH`; signing (below) is optional.
+Building needs no secrets (`TG_APP_ID` / `TG_APP_HASH` are optional overrides, see above); signing (below) is optional.
 
 - **Debug APKs** are signed with `TMessagesProj/config/release.keystore` (`signingConfigs.debug`, password from
   `gradle.properties`), the public Telegram test key, not a per-run debug keystore. So debug APKs from different CI runs
