@@ -54,6 +54,7 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
+import org.telegram.messenger.DispatchQueue;
 import org.telegram.messenger.EmojiPackManager;
 import org.telegram.messenger.FileLoader;
 import org.telegram.messenger.FileLog;
@@ -853,6 +854,7 @@ public class ThemeActivity extends BaseFragment implements NotificationCenter.No
             Theme.loadRemoteThemes(currentAccount, true);
             Theme.checkCurrentRemoteTheme(true);
         }
+        refreshEmojiPackTitles();
         return super.onFragmentCreate();
     }
 
@@ -1534,36 +1536,231 @@ public class ThemeActivity extends BaseFragment implements NotificationCenter.No
         presentFragment(new ThemePreviewActivity(currentTheme, false, ThemePreviewActivity.SCREEN_TYPE_ACCENT_COLOR, accent.id >= 100, currentType == THEME_TYPE_NIGHT));
     }
 
-    /** PoC: lets the user pick an installed emoji pack; zips are imported from the app's external files dir. */
+    private static final int REQUEST_EMOJI_PACK_IMPORT = 4219;
+
+    // Extracting the Blob pack (3569 files) takes seconds on slow storage. It runs on its own single-thread queue, not on
+    // Utilities.globalQueue, which also decodes emoji bitmaps and many other things; being a single thread it keeps the
+    // chooser preparation, imports and deletions serialized.
+    private static DispatchQueue emojiPackQueue;
+    private boolean emojiPackChooserBusy;
+
+    private static synchronized DispatchQueue getEmojiPackQueue() {
+        if (emojiPackQueue == null) {
+            emojiPackQueue = new DispatchQueue("emojiPackQueue");
+        }
+        return emojiPackQueue;
+    }
+
+    // id -> title shown in the chooser and the settings row. Computed on emojiPackQueue (it reads the pack markers),
+    // read and replaced only on the UI thread, so binding the row never touches the disk.
+    private final java.util.HashMap<String, String> emojiPackTitles = new java.util.HashMap<>();
+
+    private String getEmojiPackTitle(String id) {
+        String title = emojiPackTitles.get(id);
+        return title != null ? title : id;
+    }
+
+    /** Background only (emojiPackQueue): titles of the given installed packs; the bundled copy is marked as built-in. */
+    private static java.util.HashMap<String, String> computeEmojiPackTitles(java.util.List<String> ids) {
+        java.util.HashMap<String, String> titles = new java.util.HashMap<>();
+        for (String id : ids) {
+            titles.put(id, EmojiPackManager.isBundledInstall(id)
+                    ? LocaleController.formatString(R.string.EmojiStyleBuiltIn, EmojiPackManager.getDisplayName(id))
+                    : id);
+        }
+        return titles;
+    }
+
+    /** UI thread. */
+    private void applyEmojiPackTitles(java.util.HashMap<String, String> titles) {
+        emojiPackTitles.clear();
+        emojiPackTitles.putAll(titles);
+        if (listAdapter != null && emojiPackRow != -1) {
+            listAdapter.notifyItemChanged(emojiPackRow);
+        }
+    }
+
+    /** Recomputes the titles in the background and refreshes the settings row. */
+    private void refreshEmojiPackTitles() {
+        getEmojiPackQueue().postRunnable(() -> {
+            final java.util.HashMap<String, String> titles = computeEmojiPackTitles(EmojiPackManager.listInstalled());
+            AndroidUtilities.runOnUIThread(() -> applyEmojiPackTitles(titles));
+        });
+    }
+
+    /**
+     * Lets the user pick an installed emoji pack. Bundled packs are extracted from the APK assets on first use;
+     * "Import from file…" opens the system file picker for any pack zip, "Delete a pack…" removes installed ones.
+     */
     private void showEmojiPackChooser() {
         if (getParentActivity() == null) {
             return;
         }
-        Utilities.globalQueue.postRunnable(() -> {
-            EmojiPackManager.installPendingZips();
-            final java.util.ArrayList<String> ids = EmojiPackManager.listInstalled();
+        if (emojiPackChooserBusy) {
+            return; // preparation (first-time extraction) already running: ignore repeated taps
+        }
+        emojiPackChooserBusy = true;
+        // Spinner only if the preparation takes noticeable time (first extraction of the bundled pack).
+        final AlertDialog[] progress = new AlertDialog[1];
+        final Runnable showProgress = () -> {
+            if (getParentActivity() != null && emojiPackChooserBusy) {
+                progress[0] = new AlertDialog(getParentActivity(), AlertDialog.ALERT_TYPE_SPINNER);
+                progress[0].setCanCancel(false);
+                progress[0].show();
+            }
+        };
+        AndroidUtilities.runOnUIThread(showProgress, 300);
+        getEmojiPackQueue().postRunnable(() -> {
+            java.util.ArrayList<String> loadedIds = new java.util.ArrayList<>();
+            java.util.HashMap<String, String> loadedTitles = null; // null: preparation failed, keep the cached titles
+            final java.util.ArrayList<String> deletable = new java.util.ArrayList<>();
+            try {
+                EmojiPackManager.installBundled();
+                loadedIds = EmojiPackManager.listInstalled();
+                for (String id : loadedIds) {
+                    if (!EmojiPackManager.isBundledInstall(id)) {
+                        deletable.add(id);
+                    }
+                }
+                loadedTitles = computeEmojiPackTitles(loadedIds);
+            } catch (Throwable e) {
+                FileLog.e(e);
+            }
+            final java.util.ArrayList<String> ids = loadedIds;
+            final java.util.HashMap<String, String> titles = loadedTitles;
             AndroidUtilities.runOnUIThread(() -> {
+                if (titles != null) {
+                    applyEmojiPackTitles(titles);
+                }
+                AndroidUtilities.cancelRunOnUIThread(showProgress);
+                emojiPackChooserBusy = false;
+                if (progress[0] != null) {
+                    try {
+                        progress[0].dismiss();
+                    } catch (Exception ignore) {
+                    }
+                    progress[0] = null;
+                }
                 if (getParentActivity() == null) {
                     return;
                 }
-                final String[] names = new String[ids.size() + 1];
+                // [Default] [packs...] [Import from file...] [Delete a pack... (only if something can be deleted)]
+                final int importIndex = ids.size() + 1;
+                final int deleteIndex = deletable.isEmpty() ? -1 : ids.size() + 2;
+                final String[] names = new String[ids.size() + 2 + (deletable.isEmpty() ? 0 : 1)];
                 names[0] = getString(R.string.EmojiStyleDefault);
                 int selected = 0;
                 final String active = EmojiPackManager.getActivePackId();
                 for (int i = 0; i < ids.size(); i++) {
-                    names[i + 1] = ids.get(i);
+                    names[i + 1] = getEmojiPackTitle(ids.get(i));
                     if (ids.get(i).equals(active)) {
                         selected = i + 1;
                     }
                 }
+                names[importIndex] = getString(R.string.EmojiStyleImport);
+                if (deleteIndex != -1) {
+                    names[deleteIndex] = getString(R.string.EmojiStyleDelete);
+                }
                 showDialog(AlertsCreator.createSingleChoiceDialog(getParentActivity(), names, getString(R.string.EmojiStyle), selected, (dialog, which) -> {
-                    EmojiPackManager.setActivePack(which == 0 ? EmojiPackManager.DEFAULT_PACK : ids.get(which - 1));
-                    if (listAdapter != null && emojiPackRow != -1) {
-                        listAdapter.notifyItemChanged(emojiPackRow);
+                    if (which == importIndex) {
+                        startEmojiPackImport();
+                    } else if (which == deleteIndex) {
+                        showEmojiPackDeleteChooser(deletable);
+                    } else {
+                        EmojiPackManager.setActivePack(which == 0 ? EmojiPackManager.DEFAULT_PACK : ids.get(which - 1));
+                        if (listAdapter != null && emojiPackRow != -1) {
+                            listAdapter.notifyItemChanged(emojiPackRow);
+                        }
                     }
                 }));
             });
         });
+    }
+
+    private void startEmojiPackImport() {
+        try {
+            Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            intent.addCategory(Intent.CATEGORY_OPENABLE);
+            intent.setType("*/*");
+            // application/zip is what most pickers use; some providers report zips as x-zip-compressed or octet-stream
+            intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/zip", "application/x-zip-compressed", "application/octet-stream"});
+            startActivityForResult(intent, REQUEST_EMOJI_PACK_IMPORT);
+        } catch (Exception e) {
+            FileLog.e(e);
+            toastEmojiPack(LocaleController.formatString(R.string.EmojiStyleImportFailed, String.valueOf(e.getMessage())));
+        }
+    }
+
+    @Override
+    public void onActivityResultFragment(int requestCode, int resultCode, Intent data) {
+        if (requestCode != REQUEST_EMOJI_PACK_IMPORT || resultCode != Activity.RESULT_OK || data == null || data.getData() == null) {
+            return;
+        }
+        final Uri uri = data.getData();
+        final android.content.Context context = ApplicationLoader.applicationContext;
+        toastEmojiPack(getString(R.string.EmojiStyleImporting));
+        getEmojiPackQueue().postRunnable(() -> {
+            String id = null;
+            String error = null;
+            try {
+                id = EmojiPackManager.importFromUri(context, uri);
+                EmojiPackManager.setActivePack(id); // success: select the new pack right away
+            } catch (Throwable e) {
+                FileLog.e(e);
+                error = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            }
+            final String finalId = id;
+            final String finalError = error;
+            final java.util.HashMap<String, String> titles = computeEmojiPackTitles(EmojiPackManager.listInstalled());
+            AndroidUtilities.runOnUIThread(() -> {
+                applyEmojiPackTitles(titles);
+                if (finalError != null) {
+                    toastEmojiPack(LocaleController.formatString(R.string.EmojiStyleImportFailed, finalError));
+                } else {
+                    toastEmojiPack(LocaleController.formatString(R.string.EmojiStyleImported, finalId));
+                }
+                if (listAdapter != null && emojiPackRow != -1) {
+                    listAdapter.notifyItemChanged(emojiPackRow);
+                }
+            });
+        });
+    }
+
+    private void showEmojiPackDeleteChooser(final java.util.ArrayList<String> deletable) {
+        if (getParentActivity() == null) {
+            return;
+        }
+        final String[] names = new String[deletable.size()];
+        for (int i = 0; i < names.length; i++) {
+            names[i] = getEmojiPackTitle(deletable.get(i));
+        }
+        showDialog(AlertsCreator.createSingleChoiceDialog(getParentActivity(), names, getString(R.string.EmojiStyleDelete), -1, (dialog, which) -> {
+            final String id = deletable.get(which);
+            AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
+            builder.setTitle(getString(R.string.EmojiStyleDelete));
+            builder.setMessage(LocaleController.formatString(R.string.EmojiStyleDeleteConfirm, getEmojiPackTitle(id)));
+            builder.setPositiveButton(getString(R.string.Delete), (d, w) -> getEmojiPackQueue().postRunnable(() -> {
+                final boolean ok = EmojiPackManager.deletePack(id);
+                final java.util.HashMap<String, String> titles = computeEmojiPackTitles(EmojiPackManager.listInstalled());
+                AndroidUtilities.runOnUIThread(() -> {
+                    applyEmojiPackTitles(titles);
+                    if (!ok) {
+                        toastEmojiPack(LocaleController.formatString(R.string.EmojiStyleDeleteFailed, id));
+                    }
+                    if (listAdapter != null && emojiPackRow != -1) {
+                        listAdapter.notifyItemChanged(emojiPackRow);
+                    }
+                });
+            }));
+            builder.setNegativeButton(getString(R.string.Cancel), null);
+            showDialog(builder.create());
+        }));
+    }
+
+    private void toastEmojiPack(String text) {
+        if (getParentActivity() != null) {
+            android.widget.Toast.makeText(getParentActivity(), text, android.widget.Toast.LENGTH_LONG).show();
+        }
     }
 
     private void createNewTheme() {
@@ -2736,7 +2933,7 @@ public class ThemeActivity extends BaseFragment implements NotificationCenter.No
                         cell.setColors(Theme.key_dialogIcon, Theme.key_windowBackgroundWhiteBlackText);
                         cell.setTextAndIcon(getString(R.string.EmojiStyle), R.drawable.msg2_sticker, false);
                         String packId = EmojiPackManager.getActivePackId();
-                        cell.setSubtitle(packId.isEmpty() ? getString(R.string.EmojiStyleDefault) : packId);
+                        cell.setSubtitle(packId.isEmpty() ? getString(R.string.EmojiStyleDefault) : getEmojiPackTitle(packId));
                         cell.offsetFromImage = 64;
                         cell.heightDp = 60;
                         cell.imageLeft = 20;
