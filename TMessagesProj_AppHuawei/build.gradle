@@ -51,6 +51,7 @@ android {
 
     androidResources {
         noCompress += "pack"
+        noCompress += "zip" // assets/emoji_packs/*.zip must stay stored (uncompressed) in the APK
         localeFilters += ["zz"]
     }
 

@@ -1,0 +1,21 @@
+Bundled emoji pack "Blob" (emoji_packs/blob.zip)
+================================================
+
+The images in blob.zip are derived from Blobmoji (https://github.com/C1710/blobmoji),
+which is based on Noto Emoji (https://github.com/googlefonts/noto-emoji),
+Copyright Google Inc. and the respective creators; see the Blobmoji AUTHORS_Noto,
+CONTRIBUTORS_Noto and CONTRIBUTORS_Blob.md files. Noto is a trademark of Google Inc.
+
+License of the images: Apache License, Version 2.0
+(full text: blob-LICENSE-Apache-2.0.txt next to this file). Flag images under
+Blobmoji's third_party/region-flags are in the public domain or otherwise exempt
+from copyright.
+
+Modifications made for this app (Apache-2.0 section 4(b)): the PNG exports of the
+Blobmoji releases (png-15.0.zip and png-15.1.zip) were cropped to remove the side
+bearing, downscaled to 64x64 px, and renamed to the lower-case Unicode code point
+sequence of the emoji (for example 1f600.png, 1f468-200d-1f469-200d-1f467.png).
+3569 images; a few of the newest emoji have no Blob image and fall back to the
+built-in emoji. The pack is installed by EmojiPackManager.installBundled().
+
+The Blobmoji/Noto images are NOT covered by the GPL of the app's source code.
