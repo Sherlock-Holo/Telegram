@@ -6,7 +6,7 @@ name: Android CI
 #   - arm64-v8a release, UNSIGNED -> for a phone, sign it yourself (see .github/CI.md, "Signing")
 # Each variant builds a single ABI (-Pandroid.injected.build.abi), one job each, all in parallel.
 # -Pandroid.injected.testOnly=false is required next to it: AGP otherwise stamps android:testOnly="true".
-# No secrets are used anywhere in this workflow.
+# Secrets TG_APP_ID / TG_APP_HASH (your own api_id/api_hash from my.telegram.org) are required, see .github/CI.md.
 
 on:
   push:
@@ -58,8 +58,18 @@ jobs:
       # The NDK is freshly installed on every run (new mtimes), so key the compiler check on its version.
       CCACHE_COMPILERCHECK: string:ndk-27.2.12479018
       CCACHE_MAXSIZE: 1500M
+      # Telegram api_id / api_hash, read by TMessagesProj/build.gradle (env var or -P property). Never echo them.
+      TG_APP_ID: ${{ secrets.TG_APP_ID }}
+      TG_APP_HASH: ${{ secrets.TG_APP_HASH }}
 
     steps:
+      - name: Check Telegram API credentials
+        run: |
+          if [ -z "$TG_APP_ID" ] || [ -z "$TG_APP_HASH" ]; then
+            echo "::error::Repository secrets TG_APP_ID and TG_APP_HASH are not available (not set, or this is a pull request from a fork)."
+            exit 1
+          fi
+
       - name: Free disk space
         run: |
           # Not needed for an Android build; frees ~20 GB on the runner.

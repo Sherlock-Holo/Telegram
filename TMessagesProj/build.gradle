@@ -119,6 +119,36 @@ dependencies {
     coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.5'
 }
 
+// Fork: Telegram api_id / api_hash are NOT committed. Provide them with the Gradle properties TG_APP_ID /
+// TG_APP_HASH (-P..., or ~/.gradle/gradle.properties, which Android Studio also reads) or the environment
+// variables of the same name. Missing/malformed values do NOT fail configuration (so `gradlew tasks` and IDE sync
+// still work); the preBuild task fails with a clear message instead, unless -PallowPublicApiKey=true is passed
+// (public id 4, which Telegram rejects with API_ID_PUBLISHED_FLOOD).
+def tgApiValue(String name) {
+    def v = project.findProperty(name) ?: System.getenv(name)
+    return v == null ? null : v.toString().trim()
+}
+def tgAppId = tgApiValue("TG_APP_ID")
+def tgAppHash = tgApiValue("TG_APP_HASH")
+def tgApiError = null
+if (!tgAppId || !tgAppHash) {
+    if (project.findProperty("allowPublicApiKey") == "true") {
+        logger.warn("WARNING: TG_APP_ID/TG_APP_HASH not set, using the public api_id 4; login will most likely fail")
+        tgAppId = "4"
+        tgAppHash = "014b35b6184100b085b0d0572f9b5103"
+    } else {
+        tgApiError = "TG_APP_ID and TG_APP_HASH are required (Gradle property or environment variable); see .github/CI.md"
+    }
+}
+if (tgApiError == null && (!(tgAppId ==~ /\d+/) || !(tgAppHash ==~ /[0-9a-fA-F]{32}/))) {
+    tgApiError = "TG_APP_ID must be digits and TG_APP_HASH must be 32 hex chars; see .github/CI.md"
+}
+if (tgApiError != null) {
+    // placeholders so that configuration succeeds; preBuild (below) fails the build
+    tgAppId = "0"
+    tgAppHash = "0" * 32
+}
+
 android {
     compileSdkVersion 36
     buildToolsVersion '36.0.0'
@@ -155,6 +185,9 @@ android {
         vectorDrawables.generatedDensities = ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi']
 
         multiDexEnabled true
+
+        buildConfigField "int", "APP_ID", tgAppId
+        buildConfigField "String", "APP_HASH", "\"" + tgAppHash + "\""
 
         externalNativeBuild {
             cmake {
@@ -281,3 +314,8 @@ task checkVisibility {
 }
 
 preBuild.dependsOn checkVisibility
+preBuild.doFirst {
+    if (tgApiError != null) {
+        throw new GradleException(tgApiError)
+    }
+}
