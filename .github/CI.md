@@ -20,9 +20,30 @@ manifest gets `android:testOnly="true"` (debug and release alike) and phones ref
 (`INSTALL_FAILED_TEST_ONLY`, shown by some ROMs as a bare `-15`). The workflow passes it and fails the job if
 `aapt2 dump badging` still reports `testOnly`.
 
+## Telegram api_id / api_hash
+
+The public api_id 4 is rejected by Telegram (`API_ID_PUBLISHED_FLOOD`), so the app needs your own pair from
+my.telegram.org. They are not stored in the repo: `TMessagesProj/build.gradle` reads `TG_APP_ID` / `TG_APP_HASH`
+(Gradle property or environment variable), puts them into `BuildConfig.APP_ID` / `APP_HASH`, and
+`BuildVars` uses those. Configuration (`gradlew tasks`, Android Studio sync) works without them; the build (`preBuild`) fails with a clear message when either is missing or malformed (id: digits,
+hash: 32 hex chars). For a throwaway debug build with the public key add `-PallowPublicApiKey=true` (login will
+most likely fail).
+
+- CI: add repository secrets `TG_APP_ID` and `TG_APP_HASH` (Settings > Secrets and variables > Actions). The workflow
+  passes them as environment variables and checks first that they exist. Pull requests from forks get no secrets,
+  so they fail on purpose.
+- Local, either way:
+  - environment variables: `TG_APP_ID=... TG_APP_HASH=... ./gradlew ...`
+  - `~/.gradle/gradle.properties` (not in the repo): `TG_APP_ID=...` and `TG_APP_HASH=...`, or `-PTG_APP_ID=...
+    -PTG_APP_HASH=...` on the command line.
+
+  Android Studio reads `gradle.properties` but **not** environment variables of a terminal, so use
+  `gradle.properties` for builds started from the IDE (or start the IDE from a shell that has them exported).
+- The key is compiled into the APK (it can be extracted from it), so do not publish the CI artifacts.
+
 ## Signing
 
-Nothing in the workflow uses secrets.
+The only secrets the workflow needs for building are `TG_APP_ID` / `TG_APP_HASH`; signing (below) is optional.
 
 - **Debug APKs** are signed with `TMessagesProj/config/release.keystore` (`signingConfigs.debug`, password from
   `gradle.properties`), the public Telegram test key, not a per-run debug keystore. So debug APKs from different CI runs
@@ -56,3 +77,6 @@ Nothing in the workflow uses secrets.
 - A new key means CI-signed APKs cannot update our local builds signed with the throwaway `holo-debug.jks`
   (same package `io.holo.telegram`): uninstall once. To avoid that, put `holo-debug.jks` into the secrets instead.
   The debug variant has its own package (`.beta`), so it installs next to the release one.
+- CI debug APKs are signed with the public Telegram test key `TMessagesProj/config/release.keystore`: anyone can
+  sign an update for the same package with it, so do not share the artifacts. Local builds (`CN=Holo Debug`) and CI
+  APKs have different signatures, so switching between them needs an uninstall once (app data and login are lost).
