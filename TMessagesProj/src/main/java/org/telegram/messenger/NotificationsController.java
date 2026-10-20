@@ -41,7 +41,6 @@ import android.graphics.drawable.BitmapDrawable;
 import android.media.AudioAttributes;
 import android.media.AudioManager;
 import android.media.SoundPool;
-import android.net.ConnectivityManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.PowerManager;
@@ -77,10 +76,8 @@ import org.telegram.tgnet.tl.TL_account;
 import org.telegram.tgnet.tl.TL_keyboard;
 import org.telegram.ui.ActionBar.Theme;
 import org.telegram.ui.BubbleActivity;
-import org.telegram.ui.Components.AnimatedFileNative;
 import org.telegram.ui.Components.AvatarDrawable;
 import org.telegram.ui.Components.Forum.ForumUtilities;
-import org.telegram.ui.Components.RLottieNative;
 import org.telegram.ui.Components.spoilers.SpoilerEffect;
 import org.telegram.ui.LaunchActivity;
 import org.telegram.ui.PopupNotificationActivity;
@@ -121,12 +118,7 @@ public class NotificationsController extends BaseController implements Notificat
     private final LongSparseArray<Integer> lastWearNotifiedMessageId = new LongSparseArray<>();
     private final LongSparseArray<Integer> pushDialogsOverrideMention = new LongSparseArray<>();
     private final HashSet<String> pendingVoiceLoads = new HashSet<>();
-    // Sticker notification previews. All of these are only touched on notificationsQueue.
-    private final HashSet<String> pendingStickerLoads = new HashSet<>();   // file names whose fileLoaded triggers a silent rebuild
-    private final HashSet<String> requestedStickerLoads = new HashSet<>(); // file names already requested once, never re-requested
-    private final HashSet<String> pendingStickerDecodes = new HashSet<>();   // frame cache names being decoded to a still frame
-    private final HashSet<String> failedStickerDecodes = new HashSet<>();    // frame cache names that failed / timed out, not retried
-    private final Runnable stickerRebuildRunnable = () -> showOrUpdateNotification(false);
+    private final NotificationStickerImages stickerImages = new NotificationStickerImages(currentAccount, notificationsQueue, () -> showOrUpdateNotification(false)); // Fork
     public final ArrayList<MessageObject> popupMessages = new ArrayList<>();
     public ArrayList<MessageObject> popupReplyMessages = new ArrayList<>();
     private final HashSet<Long> openedInBubbleDialogs = new HashSet<>();
@@ -3382,13 +3374,10 @@ public class NotificationsController extends BaseController implements Notificat
                 if (pendingVoiceLoads.remove(path)) {
                     showOrUpdateNotification(true);
                 }
-                if (pendingStickerLoads.remove(path)) {
-                    scheduleStickerNotificationRebuild();
-                }
+                stickerImages.onFileLoaded(path);
             });
         } else if (id == NotificationCenter.fileLoadFailed) {
-            String path = (String) args[0];
-            notificationsQueue.postRunnable(() -> pendingStickerLoads.remove(path));
+            stickerImages.onFileLoadFailed((String) args[0]);
         }
     }
 
@@ -5446,10 +5435,7 @@ public class NotificationsController extends BaseController implements Notificat
                     if (!DialogObject.isEncryptedDialog(dialogId)) {
                         boolean setPhoto = false;
                         if (preview[0] && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && !((ActivityManager) ApplicationLoader.applicationContext.getSystemService(Context.ACTIVITY_SERVICE)).isLowRamDevice()) {
-                            StickerNotificationImage stickerImage = null;
-                            if (!waitingForPasscode && !messageObject.isSecretMedia() && (messageObject.messageOwner.media instanceof TLRPC.TL_messageMediaDocument && (messageObject.isSticker() || messageObject.isAnimatedSticker()) || isSingleEmojiNotificationSticker(messageObject))) {
-                                stickerImage = getStickerNotificationImage(messageObject);
-                            }
+                            NotificationStickerImages.Image stickerImage = !waitingForPasscode && !messageObject.isSecretMedia() ? stickerImages.get(messageObject) : null;
                             File stickerAttach = stickerImage != null ? stickerImage.file : null;
                             if (!waitingForPasscode && !messageObject.isSecretMedia() && (messageObject.type == MessageObject.TYPE_PHOTO || stickerAttach != null)) {
                                 File attach = stickerAttach != null ? stickerAttach : getFileLoader().getPathToMessage(messageObject.messageOwner);
@@ -5488,17 +5474,7 @@ public class NotificationsController extends BaseController implements Notificat
                                     blurredAttach = null;
                                 }
                                 NotificationCompat.MessagingStyle.Message msg = new NotificationCompat.MessagingStyle.Message(message, ((long) messageObject.messageOwner.date) * 1000L, person);
-                                String mimeType;
-                                if (stickerAttach == null) {
-                                    mimeType = "image/jpeg";
-                                } else if (attach == stickerAttach && stickerImage.mimeType != null) {
-                                    mimeType = stickerImage.mimeType;
-                                } else {
-                                    mimeType = sniffNotificationImageMime(attach);
-                                    if (mimeType == null) {
-                                        mimeType = "image/jpeg";
-                                    }
-                                }
+                                String mimeType = NotificationStickerImages.mimeType(stickerImage, attach);
                                 Uri uri;
                                 if (attach.exists()) {
                                     try {
@@ -5515,9 +5491,7 @@ public class NotificationsController extends BaseController implements Notificat
                                             .appendPath(currentAccount + "")
                                             .appendPath(attach.getName())
                                             .appendQueryParameter("final_path", attach.getAbsolutePath());
-                                    if (stickerImage != null && stickerImage.fallback != null) {
-                                        _uri.appendQueryParameter("fallback", stickerImage.fallback.getAbsolutePath());
-                                    }
+                                    NotificationStickerImages.appendFallback(_uri, stickerImage);
                                     uri = _uri.build();
                                 } else {
                                     uri = null;
@@ -5903,483 +5877,6 @@ public class NotificationsController extends BaseController implements Notificat
             avatars.clear();
         }
         return new Pair<>(storiesCount, hidden);
-    }
-
-    private static final long NOTIFICATION_STICKER_MAX_DOCUMENT_SIZE = 1024 * 1024;
-    private static final long NOTIFICATION_STICKER_REBUILD_DELAY = 300;
-
-    private static class StickerNotificationImage {
-        final File file;
-        final String mimeType;
-        final File fallback;
-
-        StickerNotificationImage(File file, String mimeType, File fallback) {
-            this.file = file;
-            this.mimeType = mimeType;
-            this.fallback = fallback;
-        }
-    }
-
-    /**
-     * Picks the best still image for a sticker message (static webp, TGS or video sticker) that can be shown
-     * right now, best first: decoded TGS / webm frame or full static webp &gt; document thumb. Never returns the .tgs / .webm document
-     * itself and never decodes on this thread. When nothing good is on disk yet, it asks FileLoader for the
-     * (size limited) document and the thumb once; their fileLoaded triggers one silent rebuild.
-     * Returns null when nothing is usable now, so the notification stays text only.
-     * Runs on notificationsQueue.
-     */
-    private StickerNotificationImage getStickerNotificationImage(MessageObject messageObject) {
-        try {
-            TLRPC.Document document = messageObject.getDocument();
-            if (document == null || DialogObject.isEncryptedDialog(messageObject.getDialogId())) {
-                return null;
-            }
-            boolean singleEmoji = !(messageObject.messageOwner.media instanceof TLRPC.TL_messageMediaDocument);
-            if (singleEmoji && !isSingleEmojiNotificationSticker(messageObject)) {
-                return null;
-            }
-            // skin tone of a single colored emoji (👍🏽): applied while rendering, thumbs only have the default tone
-            int fitzModifier = singleEmoji ? getEmojiFitzModifier(messageObject.emojiAnimatedStickerColor) : 0;
-            // a single emoji's document is not part of the message, refresh its file reference through its set
-            Object parentObject = messageObject;
-            if (singleEmoji) {
-                TLRPC.InputStickerSet inputStickerSet = MessageObject.getInputStickerSet(document);
-                if (inputStickerSet != null) {
-                    parentObject = inputStickerSet;
-                }
-            }
-            final Object loadParent = parentObject;
-            boolean staticWebp = fitzModifier == 0 && isStaticWebpSticker(messageObject);
-            boolean smallDocument = document.size > 0 && document.size <= NOTIFICATION_STICKER_MAX_DOCUMENT_SIZE;
-            File documentFile = findStickerDocumentFile(singleEmoji ? null : messageObject, document);
-            boolean lottie = !staticWebp && (messageObject.isAnimatedSticker() || "application/x-tgsticker".equals(document.mime_type));
-            boolean video = !staticWebp && !lottie && (messageObject.isVideoSticker() || "video/webm".equals(document.mime_type));
-            if (fitzModifier != 0 && !lottie) {
-                fitzModifier = 0;
-            }
-            // the full document is only fetched when the user's auto-download rules allow it right now; thumbs are tiny and always ok
-            boolean mayLoadDocument = documentFile == null && smallDocument && (staticWebp || lottie || video) && canAutoDownloadStickerDocument(messageObject, singleEmoji, document);
-            if (lottie || video) {
-                // best: a still frame we decoded earlier (cached by document id, shared by all accounts)
-                File frameFile = getStickerFrameCacheFile(document.id, fitzModifier);
-                String frameMime = sniffNotificationImageMime(frameFile);
-                if (frameMime != null) {
-                    long now = System.currentTimeMillis();
-                    if (now - frameFile.lastModified() > 60 * 60 * 1000L) {
-                        frameFile.setLastModified(now); // LRU for trimStickerFrameCache
-                    }
-                    return new StickerNotificationImage(frameFile, frameMime, null);
-                }
-                if (documentFile != null && smallDocument) {
-                    requestStickerFrameDecode(frameFile, documentFile, lottie, fitzModifier);
-                }
-            }
-            if (staticWebp) {
-                if (documentFile != null) {
-                    String mime = sniffNotificationImageMime(documentFile);
-                    if (mime != null) {
-                        return new StickerNotificationImage(documentFile, mime, null);
-                    }
-                } else if (mayLoadDocument) {
-                    requestStickerNotificationLoad(FileLoader.getAttachFileName(document), () -> getFileLoader().loadFile(document, loadParent, FileLoader.PRIORITY_HIGH, 1));
-                }
-            } else if ((lottie || video) && mayLoadDocument) {
-                // once the document lands, the rebuild finds it on disk and decodes a frame
-                requestStickerNotificationLoad(FileLoader.getAttachFileName(document), () -> getFileLoader().loadFile(document, loadParent, FileLoader.PRIORITY_HIGH, 1));
-            }
-
-            if (fitzModifier != 0) {
-                return null; // a default-tone thumb would show the wrong skin tone; wait for the decoded frame
-            }
-            TLRPC.PhotoSize thumb = FileLoader.getClosestPhotoSizeWithSize(document.thumbs, 320, false, null, true);
-            if (thumb == null || thumb.location == null || thumb instanceof TLRPC.TL_photoCachedSize) {
-                thumb = null;
-            }
-            File thumbFile = thumb != null ? findStickerThumbFile(thumb) : null;
-
-            if (staticWebp && documentFile == null && getFileLoader().isLoadingFile(FileLoader.getAttachFileName(document))) {
-                // keep the old behaviour: msg_media_raw URI via NotificationImageProvider while it downloads,
-                // stickers are downloaded into the cache dir; fall back to the thumb if it times out
-                return new StickerNotificationImage(getFileLoader().getPathToAttach(document, true), "image/webp", thumbFile);
-            }
-            if (thumbFile != null) {
-                return new StickerNotificationImage(thumbFile, sniffNotificationImageMime(thumbFile), null);
-            }
-            if (thumb != null) {
-                ImageLocation thumbLocation = ImageLocation.getForDocument(thumb, document);
-                if (thumbLocation != null) {
-                    requestStickerNotificationLoad(FileLoader.getAttachFileName(thumb, "webp"), () -> getFileLoader().loadFile(thumbLocation, loadParent, "webp", FileLoader.PRIORITY_HIGH, 1));
-                }
-            }
-        } catch (Exception e) {
-            FileLog.e(e);
-        }
-        return null;
-    }
-
-    /**
-     * Same rule the chat UI uses for auto-downloading stickers (DownloadController treats them as photos:
-     * Wi-Fi / mobile / roaming preset enabled + per-peer mask), plus Android's system Data Saver on metered
-     * networks. When this says no, only the thumb is requested.
-     */
-    private boolean canAutoDownloadStickerDocument(MessageObject messageObject, boolean singleEmoji, TLRPC.Document document) {
-        try {
-            if (singleEmoji) {
-                // the message has no media, so canDownloadMedia(Message) would say no; use the current network's
-                // preset for stickers (photo type) directly
-                if (!getDownloadController().canDownloadMedia(DownloadController.AUTODOWNLOAD_TYPE_PHOTO, document.size)) {
-                    return false;
-                }
-            } else if (getDownloadController().canDownloadMedia(messageObject.messageOwner) == 0) {
-                return false;
-            }
-            ConnectivityManager connectivityManager = (ConnectivityManager) ApplicationLoader.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE);
-            if (connectivityManager != null && connectivityManager.isActiveNetworkMetered()
-                    && connectivityManager.getRestrictBackgroundStatus() == ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED) {
-                return false;
-            }
-            return true;
-        } catch (Exception e) {
-            FileLog.e(e);
-            return false;
-        }
-    }
-
-    /**
-     * The sticker document on disk: chat UI loads stickers into the cache dir, so check that first.
-     * messageObject is null for a single emoji, whose document is not the message's media.
-     */
-    private File findStickerDocumentFile(MessageObject messageObject, TLRPC.Document document) {
-        File file = getFileLoader().getPathToAttach(document, true);
-        if (file.exists() && file.length() > 0) {
-            return file;
-        }
-        if (messageObject == null) {
-            return null;
-        }
-        file = getFileLoader().getPathToMessage(messageObject.messageOwner);
-        if (file.exists() && file.length() > 0) {
-            return file;
-        }
-        return null;
-    }
-
-    /** Sticker thumbs are stored as .webp by the chat UI and by our own request, older code used the .jpg name. */
-    private File findStickerThumbFile(TLRPC.PhotoSize thumb) {
-        File[] candidates = new File[] {
-            getFileLoader().getPathToAttach(thumb, "webp", true),
-            getFileLoader().getPathToAttach(thumb, true),
-            getFileLoader().getPathToAttach(thumb, "webp", false),
-            getFileLoader().getPathToAttach(thumb, false)
-        };
-        for (File file : candidates) {
-            if (sniffNotificationImageMime(file) != null) {
-                return file;
-            }
-        }
-        return null;
-    }
-
-    /** Requests a file at most once per session; its fileLoaded schedules one silent rebuild. notificationsQueue only. */
-    private void requestStickerNotificationLoad(String fileName, Runnable load) {
-        if (TextUtils.isEmpty(fileName)) {
-            return;
-        }
-        if (requestedStickerLoads.size() > 500) {
-            requestedStickerLoads.clear();
-        }
-        if (!requestedStickerLoads.add(fileName)) {
-            return;
-        }
-        pendingStickerLoads.add(fileName);
-        load.run();
-    }
-
-    /**
-     * Coalesces sticker preview arrivals into one rebuild. notifyAboutLast = false: no sound / vibration,
-     * low priority, silent channel, same as edits and read updates. Dismissed dialogs stay dismissed (dismissDate).
-     */
-    private void scheduleStickerNotificationRebuild() {
-        notificationsQueue.cancelRunnable(stickerRebuildRunnable);
-        notificationsQueue.postRunnable(stickerRebuildRunnable, NOTIFICATION_STICKER_REBUILD_DELAY);
-    }
-
-    private static final int NOTIFICATION_STICKER_FRAME_SIZE = 512;
-    private static final long NOTIFICATION_STICKER_DECODE_TIMEOUT = 5000;
-    private static final int NOTIFICATION_STICKER_CACHE_MAX_FILES = 200;
-    private static final long NOTIFICATION_STICKER_CACHE_MAX_BYTES = 20L * 1024 * 1024;
-    private static final long NOTIFICATION_STICKER_CACHE_MAX_AGE = 7L * 24 * 60 * 60 * 1000;
-    private static DispatchQueue notificationStickerQueue;
-    private static File notificationStickerCacheDir;
-
-    private static synchronized DispatchQueue getNotificationStickerQueue() {
-        if (notificationStickerQueue == null) {
-            notificationStickerQueue = new DispatchQueue("notificationStickerQueue");
-        }
-        return notificationStickerQueue;
-    }
-
-    /**
-     * files/cache/notification_stickers: covered by the "cache" files-path of res/xml/provider_paths.xml, so
-     * FileProvider can hand it to System UI.
-     */
-    private static synchronized File getStickerFrameCacheDir() {
-        if (notificationStickerCacheDir == null || !notificationStickerCacheDir.isDirectory()) {
-            notificationStickerCacheDir = ApplicationLoader.getFilesDirFixed("cache/notification_stickers");
-        }
-        return notificationStickerCacheDir;
-    }
-
-    private static File getStickerFrameCacheFile(long documentId, int fitzModifier) {
-        File dir = getStickerFrameCacheDir();
-        return dir == null ? null : new File(dir, "sticker_" + documentId + (fitzModifier != 0 ? "_f" + fitzModifier : "") + ".webp");
-    }
-
-    /**
-     * Decodes one still frame of a TGS / webm sticker on notificationStickerQueue, never on notificationsQueue.
-     * Success schedules one silent rebuild; failure or a {@link #NOTIFICATION_STICKER_DECODE_TIMEOUT} timeout
-     * marks the document failed so it is not retried and the notification keeps the thumb / text.
-     * notificationsQueue only.
-     */
-    private void requestStickerFrameDecode(File out, File source, boolean lottie, int fitzModifier) {
-        if (out == null) {
-            return;
-        }
-        String key = out.getName();
-        if (failedStickerDecodes.contains(key) || pendingStickerDecodes.contains(key)) {
-            return;
-        }
-        if (failedStickerDecodes.size() > 500) {
-            failedStickerDecodes.clear();
-        }
-        pendingStickerDecodes.add(key);
-        Runnable timeout = () -> {
-            if (pendingStickerDecodes.remove(key)) {
-                FileLog.d("sticker notification frame decode timed out " + key);
-                failedStickerDecodes.add(key);
-            }
-        };
-        notificationsQueue.postRunnable(timeout, NOTIFICATION_STICKER_DECODE_TIMEOUT);
-        int account = currentAccount;
-        getNotificationStickerQueue().postRunnable(() -> {
-            boolean ok = decodeStickerFrame(source, out, lottie, fitzModifier, account);
-            notificationsQueue.postRunnable(() -> {
-                notificationsQueue.cancelRunnable(timeout);
-                if (!pendingStickerDecodes.remove(key)) {
-                    return; // timed out; a late result is still picked up by the next regular update
-                }
-                if (ok) {
-                    scheduleStickerNotificationRebuild();
-                } else {
-                    failedStickerDecodes.add(key);
-                }
-            });
-        });
-    }
-
-    /**
-     * Renders only the first frame, straight at &lt;= {@link #NOTIFICATION_STICKER_FRAME_SIZE} px, never the whole
-     * animation, writes it as webp via a temp file + rename, and recycles every bitmap. notificationStickerQueue only.
-     */
-    private static boolean decodeStickerFrame(File source, File out, boolean lottie, int fitzModifier, int account) {
-        if (sniffNotificationImageMime(out) != null) {
-            return true; // another account already decoded this document
-        }
-        if (!source.exists() || source.length() <= 0 || source.length() > NOTIFICATION_STICKER_MAX_DOCUMENT_SIZE) {
-            return false;
-        }
-        Bitmap bitmap = null;
-        File tmp = new File(out.getParentFile(), out.getName() + ".tmp");
-        try {
-            if (lottie) {
-                RLottieNative lottieNative = RLottieNative.createFromFile(source.getAbsolutePath(), null, null, null, fitzModifier, null);
-                if (lottieNative == null) {
-                    return false;
-                }
-                try {
-                    bitmap = Bitmap.createBitmap(NOTIFICATION_STICKER_FRAME_SIZE, NOTIFICATION_STICKER_FRAME_SIZE, Bitmap.Config.ARGB_8888);
-                    int result = -5;
-                    for (int attempt = 0; attempt < 10 && result == -5; attempt++) {
-                        result = lottieNative.getFrame(0, bitmap, true);
-                        if (result == -5) {
-                            Thread.sleep(20);
-                        }
-                    }
-                    if (result < 0) {
-                        return false;
-                    }
-                } finally {
-                    lottieNative.recycle();
-                }
-            } else {
-                int[] metaData = new int[8];
-                AnimatedFileNative decoder = null;
-                for (int attempt = 0; attempt < 3 && decoder == null; attempt++) {
-                    decoder = AnimatedFileNative.createDecoderFrom(source.getAbsolutePath(), metaData, account, 0, null, false);
-                }
-                if (decoder == null) {
-                    return false;
-                }
-                Bitmap frame = null;
-                try {
-                    int w = metaData[0];
-                    int h = metaData[1];
-                    if (w <= 0 || h <= 0 || w > 2048 || h > 2048) {
-                        return false;
-                    }
-                    frame = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-                    if (decoder.getVideoFrame(frame, false, 0, 0, false) == 0) {
-                        return false;
-                    }
-                    float scale = Math.min(1f, NOTIFICATION_STICKER_FRAME_SIZE / (float) Math.max(w, h));
-                    if (scale < 1f) {
-                        bitmap = Bitmap.createScaledBitmap(frame, Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale)), true);
-                    } else {
-                        bitmap = frame;
-                        frame = null;
-                    }
-                } finally {
-                    decoder.recycle();
-                    if (frame != null && frame != bitmap) {
-                        frame.recycle();
-                    }
-                }
-            }
-            try (FileOutputStream stream = new FileOutputStream(tmp)) {
-                Bitmap.CompressFormat format = Build.VERSION.SDK_INT >= 30 ? Bitmap.CompressFormat.WEBP_LOSSY : Bitmap.CompressFormat.WEBP;
-                if (!bitmap.compress(format, 90, stream)) {
-                    return false;
-                }
-            }
-            if (!tmp.renameTo(out)) {
-                return false;
-            }
-            trimStickerFrameCache(out.getParentFile());
-            return true;
-        } catch (Throwable e) {
-            FileLog.e(e);
-            return false;
-        } finally {
-            if (bitmap != null) {
-                bitmap.recycle();
-            }
-            if (tmp.exists()) {
-                tmp.delete();
-            }
-        }
-    }
-
-    /** Keeps the frame cache small: drops files older than 7 days, then the oldest beyond 200 files / 20 MB. */
-    private static void trimStickerFrameCache(File dir) {
-        try {
-            File[] files = dir == null ? null : dir.listFiles();
-            if (files == null) {
-                return;
-            }
-            long now = System.currentTimeMillis();
-            ArrayList<File> alive = new ArrayList<>();
-            long total = 0;
-            for (File file : files) {
-                if (now - file.lastModified() > NOTIFICATION_STICKER_CACHE_MAX_AGE || file.getName().endsWith(".tmp") && now - file.lastModified() > 60_000) {
-                    file.delete();
-                } else {
-                    alive.add(file);
-                    total += file.length();
-                }
-            }
-            if (alive.size() <= NOTIFICATION_STICKER_CACHE_MAX_FILES && total <= NOTIFICATION_STICKER_CACHE_MAX_BYTES) {
-                return;
-            }
-            Collections.sort(alive, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
-            int count = alive.size();
-            for (int i = 0; i < alive.size() && (count > NOTIFICATION_STICKER_CACHE_MAX_FILES || total > NOTIFICATION_STICKER_CACHE_MAX_BYTES); i++) {
-                File file = alive.get(i);
-                total -= file.length();
-                count--;
-                file.delete();
-            }
-        } catch (Throwable e) {
-            FileLog.e(e);
-        }
-    }
-
-    /**
-     * A text message that is a single emoji / single custom emoji which the chat UI shows as a big sticker
-     * (MessageObject.checkBigAnimatedEmoji filled emojiAnimatedSticker). Skipped when animated emoji in chats are
-     * turned off (LiteMode FLAG_ANIMATED_EMOJI_CHAT), like Telegram X. Only the already resolved document is
-     * used: if just emojiAnimatedStickerId is known nothing is fetched and the notification stays text only.
-     */
-    private static boolean isSingleEmojiNotificationSticker(MessageObject messageObject) {
-        if (messageObject.emojiAnimatedSticker == null) {
-            return false;
-        }
-        TLRPC.MessageMedia media = messageObject.messageOwner.media;
-        if (media != null && !(media instanceof TLRPC.TL_messageMediaEmpty)) {
-            return false;
-        }
-        try {
-            return LiteMode.isEnabled(LiteMode.FLAG_ANIMATED_EMOJI_CHAT);
-        } catch (Exception e) {
-            FileLog.e(e);
-            return false;
-        }
-    }
-
-    /** Same mapping as ImageLoader uses for the "_c1".."_c5" big emoji filters. */
-    private static int getEmojiFitzModifier(String color) {
-        if (color == null) {
-            return 0;
-        }
-        switch (color) {
-            case "_c1": return 12;
-            case "_c2": return 3;
-            case "_c3": return 4;
-            case "_c4": return 5;
-            case "_c5": return 6;
-            default: return 0;
-        }
-    }
-
-    private static boolean isStaticWebpSticker(MessageObject messageObject) {
-        TLRPC.Document document = messageObject.getDocument();
-        return document != null && !messageObject.isAnimatedSticker() && !messageObject.isVideoSticker() && "image/webp".equals(document.mime_type);
-    }
-
-    /**
-     * Returns the image mime type of a file by its magic bytes (webp / jpeg / png), or null when the file
-     * is missing or is not one of those (e.g. a gzip'ed .tgs or a .webm).
-     */
-    private static String sniffNotificationImageMime(File file) {
-        if (file == null || !file.exists() || file.length() < 12) {
-            return null;
-        }
-        byte[] header = new byte[12];
-        try (java.io.FileInputStream in = new java.io.FileInputStream(file)) {
-            int read = 0;
-            while (read < header.length) {
-                int r = in.read(header, read, header.length - read);
-                if (r < 0) {
-                    break;
-                }
-                read += r;
-            }
-            if (read < header.length) {
-                return null;
-            }
-        } catch (Exception e) {
-            FileLog.e(e);
-            return null;
-        }
-        if (header[0] == 'R' && header[1] == 'I' && header[2] == 'F' && header[3] == 'F' && header[8] == 'W' && header[9] == 'E' && header[10] == 'B' && header[11] == 'P') {
-            return "image/webp";
-        }
-        if ((header[0] & 0xFF) == 0xFF && (header[1] & 0xFF) == 0xD8 && (header[2] & 0xFF) == 0xFF) {
-            return "image/jpeg";
-        }
-        if ((header[0] & 0xFF) == 0x89 && header[1] == 'P' && header[2] == 'N' && header[3] == 'G') {
-            return "image/png";
-        }
-        return null;
     }
 
     public static Person.Builder loadRoundAvatar(long dialogId, File avatar, Person.Builder personBuilder) {
