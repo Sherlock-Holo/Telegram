@@ -819,6 +819,11 @@ public class SharedConfig {
 
     // returns a >= b
     public static boolean versionBiggerOrEqual(String a, String b) {
+        // fork version names carry a "-holo-N" suffix; compare only the numeric upstream part
+        int dashA = a.indexOf('-');
+        if (dashA >= 0) a = a.substring(0, dashA);
+        int dashB = b.indexOf('-');
+        if (dashB >= 0) b = b.substring(0, dashB);
         String[] partsA = a.split("\\.");
         String[] partsB = b.split("\\.");
         for (int i = 0; i < Math.min(partsA.length, partsB.length); ++i) {
