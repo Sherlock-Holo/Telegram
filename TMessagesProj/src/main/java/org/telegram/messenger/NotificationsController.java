@@ -76,8 +76,10 @@ import org.telegram.tgnet.tl.TL_account;
 import org.telegram.tgnet.tl.TL_keyboard;
 import org.telegram.ui.ActionBar.Theme;
 import org.telegram.ui.BubbleActivity;
+import org.telegram.ui.Components.AnimatedFileNative;
 import org.telegram.ui.Components.AvatarDrawable;
 import org.telegram.ui.Components.Forum.ForumUtilities;
+import org.telegram.ui.Components.RLottieNative;
 import org.telegram.ui.Components.spoilers.SpoilerEffect;
 import org.telegram.ui.LaunchActivity;
 import org.telegram.ui.PopupNotificationActivity;
@@ -121,6 +123,8 @@ public class NotificationsController extends BaseController implements Notificat
     // Sticker notification previews. All of these are only touched on notificationsQueue.
     private final HashSet<String> pendingStickerLoads = new HashSet<>();   // file names whose fileLoaded triggers a silent rebuild
     private final HashSet<String> requestedStickerLoads = new HashSet<>(); // file names already requested once, never re-requested
+    private final HashSet<Long> pendingStickerDecodes = new HashSet<>();   // document ids being decoded to a still frame
+    private final HashSet<Long> failedStickerDecodes = new HashSet<>();    // document ids that failed / timed out, not retried
     private final Runnable stickerRebuildRunnable = () -> showOrUpdateNotification(false);
     public final ArrayList<MessageObject> popupMessages = new ArrayList<>();
     public ArrayList<MessageObject> popupReplyMessages = new ArrayList<>();
@@ -5917,7 +5921,7 @@ public class NotificationsController extends BaseController implements Notificat
 
     /**
      * Picks the best still image for a sticker message (static webp, TGS or video sticker) that can be shown
-     * right now, best first: full static webp &gt; document thumb. Never returns the .tgs / .webm document
+     * right now, best first: decoded TGS / webm frame or full static webp &gt; document thumb. Never returns the .tgs / .webm document
      * itself and never decodes on this thread. When nothing good is on disk yet, it asks FileLoader for the
      * (size limited) document and the thumb once; their fileLoaded triggers one silent rebuild.
      * Returns null when nothing is usable now, so the notification stays text only.
@@ -5932,6 +5936,19 @@ public class NotificationsController extends BaseController implements Notificat
             boolean staticWebp = isStaticWebpSticker(messageObject);
             boolean smallDocument = document.size > 0 && document.size <= NOTIFICATION_STICKER_MAX_DOCUMENT_SIZE;
             File documentFile = findStickerDocumentFile(messageObject, document);
+            boolean lottie = !staticWebp && (messageObject.isAnimatedSticker() || "application/x-tgsticker".equals(document.mime_type));
+            boolean video = !staticWebp && !lottie && messageObject.isVideoSticker();
+            if (lottie || video) {
+                // best: a still frame we decoded earlier (cached by document id, shared by all accounts)
+                File frameFile = getStickerFrameCacheFile(document.id);
+                String frameMime = sniffNotificationImageMime(frameFile);
+                if (frameMime != null) {
+                    return new StickerNotificationImage(frameFile, frameMime, null);
+                }
+                if (documentFile != null && smallDocument) {
+                    requestStickerFrameDecode(document.id, documentFile, lottie);
+                }
+            }
             if (staticWebp) {
                 if (documentFile != null) {
                     String mime = sniffNotificationImageMime(documentFile);
@@ -5941,7 +5958,8 @@ public class NotificationsController extends BaseController implements Notificat
                 } else if (smallDocument) {
                     requestStickerNotificationLoad(FileLoader.getAttachFileName(document), () -> getFileLoader().loadFile(document, messageObject, FileLoader.PRIORITY_HIGH, 1));
                 }
-            } else if (documentFile == null && smallDocument) {
+            } else if ((lottie || video) && documentFile == null && smallDocument) {
+                // once the document lands, the rebuild finds it on disk and decodes a frame
                 requestStickerNotificationLoad(FileLoader.getAttachFileName(document), () -> getFileLoader().loadFile(document, messageObject, FileLoader.PRIORITY_HIGH, 1));
             }
 
@@ -6022,6 +6040,205 @@ public class NotificationsController extends BaseController implements Notificat
     private void scheduleStickerNotificationRebuild() {
         notificationsQueue.cancelRunnable(stickerRebuildRunnable);
         notificationsQueue.postRunnable(stickerRebuildRunnable, NOTIFICATION_STICKER_REBUILD_DELAY);
+    }
+
+    private static final int NOTIFICATION_STICKER_FRAME_SIZE = 512;
+    private static final long NOTIFICATION_STICKER_DECODE_TIMEOUT = 5000;
+    private static final int NOTIFICATION_STICKER_CACHE_MAX_FILES = 200;
+    private static final long NOTIFICATION_STICKER_CACHE_MAX_BYTES = 20L * 1024 * 1024;
+    private static final long NOTIFICATION_STICKER_CACHE_MAX_AGE = 7L * 24 * 60 * 60 * 1000;
+    private static DispatchQueue notificationStickerQueue;
+    private static File notificationStickerCacheDir;
+
+    private static synchronized DispatchQueue getNotificationStickerQueue() {
+        if (notificationStickerQueue == null) {
+            notificationStickerQueue = new DispatchQueue("notificationStickerQueue");
+        }
+        return notificationStickerQueue;
+    }
+
+    /**
+     * files/cache/notification_stickers: covered by the "cache" files-path of res/xml/provider_paths.xml, so
+     * FileProvider can hand it to System UI.
+     */
+    private static synchronized File getStickerFrameCacheDir() {
+        if (notificationStickerCacheDir == null || !notificationStickerCacheDir.isDirectory()) {
+            notificationStickerCacheDir = ApplicationLoader.getFilesDirFixed("cache/notification_stickers");
+        }
+        return notificationStickerCacheDir;
+    }
+
+    private static File getStickerFrameCacheFile(long documentId) {
+        File dir = getStickerFrameCacheDir();
+        return dir == null ? null : new File(dir, "sticker_" + documentId + ".webp");
+    }
+
+    /**
+     * Decodes one still frame of a TGS / webm sticker on notificationStickerQueue, never on notificationsQueue.
+     * Success schedules one silent rebuild; failure or a {@link #NOTIFICATION_STICKER_DECODE_TIMEOUT} timeout
+     * marks the document failed so it is not retried and the notification keeps the thumb / text.
+     * notificationsQueue only.
+     */
+    private void requestStickerFrameDecode(long documentId, File source, boolean lottie) {
+        if (failedStickerDecodes.contains(documentId) || pendingStickerDecodes.contains(documentId)) {
+            return;
+        }
+        File out = getStickerFrameCacheFile(documentId);
+        if (out == null) {
+            return;
+        }
+        if (failedStickerDecodes.size() > 500) {
+            failedStickerDecodes.clear();
+        }
+        pendingStickerDecodes.add(documentId);
+        Runnable timeout = () -> {
+            if (pendingStickerDecodes.remove(documentId)) {
+                FileLog.d("sticker notification frame decode timed out " + documentId);
+                failedStickerDecodes.add(documentId);
+            }
+        };
+        notificationsQueue.postRunnable(timeout, NOTIFICATION_STICKER_DECODE_TIMEOUT);
+        int account = currentAccount;
+        getNotificationStickerQueue().postRunnable(() -> {
+            boolean ok = decodeStickerFrame(source, out, lottie, account);
+            notificationsQueue.postRunnable(() -> {
+                notificationsQueue.cancelRunnable(timeout);
+                if (!pendingStickerDecodes.remove(documentId)) {
+                    return; // timed out; a late result is still picked up by the next regular update
+                }
+                if (ok) {
+                    scheduleStickerNotificationRebuild();
+                } else {
+                    failedStickerDecodes.add(documentId);
+                }
+            });
+        });
+    }
+
+    /**
+     * Renders only the first frame, straight at &lt;= {@link #NOTIFICATION_STICKER_FRAME_SIZE} px, never the whole
+     * animation, writes it as webp via a temp file + rename, and recycles every bitmap. notificationStickerQueue only.
+     */
+    private static boolean decodeStickerFrame(File source, File out, boolean lottie, int account) {
+        if (sniffNotificationImageMime(out) != null) {
+            return true; // another account already decoded this document
+        }
+        if (!source.exists() || source.length() <= 0 || source.length() > NOTIFICATION_STICKER_MAX_DOCUMENT_SIZE) {
+            return false;
+        }
+        Bitmap bitmap = null;
+        File tmp = new File(out.getParentFile(), out.getName() + ".tmp");
+        try {
+            if (lottie) {
+                RLottieNative lottieNative = RLottieNative.createFromFile(source.getAbsolutePath());
+                if (lottieNative == null) {
+                    return false;
+                }
+                try {
+                    bitmap = Bitmap.createBitmap(NOTIFICATION_STICKER_FRAME_SIZE, NOTIFICATION_STICKER_FRAME_SIZE, Bitmap.Config.ARGB_8888);
+                    int result = -5;
+                    for (int attempt = 0; attempt < 10 && result == -5; attempt++) {
+                        result = lottieNative.getFrame(0, bitmap, true);
+                        if (result == -5) {
+                            Thread.sleep(20);
+                        }
+                    }
+                    if (result < 0) {
+                        return false;
+                    }
+                } finally {
+                    lottieNative.recycle();
+                }
+            } else {
+                int[] metaData = new int[8];
+                AnimatedFileNative decoder = null;
+                for (int attempt = 0; attempt < 3 && decoder == null; attempt++) {
+                    decoder = AnimatedFileNative.createDecoderFrom(source.getAbsolutePath(), metaData, account, 0, null, false);
+                }
+                if (decoder == null) {
+                    return false;
+                }
+                Bitmap frame = null;
+                try {
+                    int w = metaData[0];
+                    int h = metaData[1];
+                    if (w <= 0 || h <= 0 || w > 2048 || h > 2048) {
+                        return false;
+                    }
+                    frame = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+                    if (decoder.getVideoFrame(frame, false, 0, 0, false) == 0) {
+                        return false;
+                    }
+                    float scale = Math.min(1f, NOTIFICATION_STICKER_FRAME_SIZE / (float) Math.max(w, h));
+                    if (scale < 1f) {
+                        bitmap = Bitmap.createScaledBitmap(frame, Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale)), true);
+                    } else {
+                        bitmap = frame;
+                        frame = null;
+                    }
+                } finally {
+                    decoder.recycle();
+                    if (frame != null && frame != bitmap) {
+                        frame.recycle();
+                    }
+                }
+            }
+            try (FileOutputStream stream = new FileOutputStream(tmp)) {
+                Bitmap.CompressFormat format = Build.VERSION.SDK_INT >= 30 ? Bitmap.CompressFormat.WEBP_LOSSY : Bitmap.CompressFormat.WEBP;
+                if (!bitmap.compress(format, 90, stream)) {
+                    return false;
+                }
+            }
+            if (!tmp.renameTo(out)) {
+                return false;
+            }
+            trimStickerFrameCache(out.getParentFile());
+            return true;
+        } catch (Throwable e) {
+            FileLog.e(e);
+            return false;
+        } finally {
+            if (bitmap != null) {
+                bitmap.recycle();
+            }
+            if (tmp.exists()) {
+                tmp.delete();
+            }
+        }
+    }
+
+    /** Keeps the frame cache small: drops files older than 7 days, then the oldest beyond 200 files / 20 MB. */
+    private static void trimStickerFrameCache(File dir) {
+        try {
+            File[] files = dir == null ? null : dir.listFiles();
+            if (files == null) {
+                return;
+            }
+            long now = System.currentTimeMillis();
+            ArrayList<File> alive = new ArrayList<>();
+            long total = 0;
+            for (File file : files) {
+                if (now - file.lastModified() > NOTIFICATION_STICKER_CACHE_MAX_AGE || file.getName().endsWith(".tmp") && now - file.lastModified() > 60_000) {
+                    file.delete();
+                } else {
+                    alive.add(file);
+                    total += file.length();
+                }
+            }
+            if (alive.size() <= NOTIFICATION_STICKER_CACHE_MAX_FILES && total <= NOTIFICATION_STICKER_CACHE_MAX_BYTES) {
+                return;
+            }
+            Collections.sort(alive, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
+            int count = alive.size();
+            for (int i = 0; i < alive.size() && (count > NOTIFICATION_STICKER_CACHE_MAX_FILES || total > NOTIFICATION_STICKER_CACHE_MAX_BYTES); i++) {
+                File file = alive.get(i);
+                total -= file.length();
+                count--;
+                file.delete();
+            }
+        } catch (Throwable e) {
+            FileLog.e(e);
+        }
     }
 
     private static boolean isStaticWebpSticker(MessageObject messageObject) {
