@@ -118,6 +118,10 @@ public class NotificationsController extends BaseController implements Notificat
     private final LongSparseArray<Integer> lastWearNotifiedMessageId = new LongSparseArray<>();
     private final LongSparseArray<Integer> pushDialogsOverrideMention = new LongSparseArray<>();
     private final HashSet<String> pendingVoiceLoads = new HashSet<>();
+    // Sticker notification previews. All of these are only touched on notificationsQueue.
+    private final HashSet<String> pendingStickerLoads = new HashSet<>();   // file names whose fileLoaded triggers a silent rebuild
+    private final HashSet<String> requestedStickerLoads = new HashSet<>(); // file names already requested once, never re-requested
+    private final Runnable stickerRebuildRunnable = () -> showOrUpdateNotification(false);
     public final ArrayList<MessageObject> popupMessages = new ArrayList<>();
     public ArrayList<MessageObject> popupReplyMessages = new ArrayList<>();
     private final HashSet<Long> openedInBubbleDialogs = new HashSet<>();
@@ -253,6 +257,7 @@ public class NotificationsController extends BaseController implements Notificat
 
         AndroidUtilities.runOnUIThread(() -> {
             getNotificationCenter().addObserver(this, NotificationCenter.fileLoaded);
+            getNotificationCenter().addObserver(this, NotificationCenter.fileLoadFailed);
         });
     }
 
@@ -3372,7 +3377,13 @@ public class NotificationsController extends BaseController implements Notificat
                 if (pendingVoiceLoads.remove(path)) {
                     showOrUpdateNotification(true);
                 }
+                if (pendingStickerLoads.remove(path)) {
+                    scheduleStickerNotificationRebuild();
+                }
             });
+        } else if (id == NotificationCenter.fileLoadFailed) {
+            String path = (String) args[0];
+            notificationsQueue.postRunnable(() -> pendingStickerLoads.remove(path));
         }
     }
 
@@ -5430,10 +5441,11 @@ public class NotificationsController extends BaseController implements Notificat
                     if (!DialogObject.isEncryptedDialog(dialogId)) {
                         boolean setPhoto = false;
                         if (preview[0] && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && !((ActivityManager) ApplicationLoader.applicationContext.getSystemService(Context.ACTIVITY_SERVICE)).isLowRamDevice()) {
-                            File stickerAttach = null;
+                            StickerNotificationImage stickerImage = null;
                             if (!waitingForPasscode && !messageObject.isSecretMedia() && messageObject.messageOwner.media instanceof TLRPC.TL_messageMediaDocument && (messageObject.isSticker() || messageObject.isAnimatedSticker())) {
-                                stickerAttach = getStickerNotificationImage(messageObject);
+                                stickerImage = getStickerNotificationImage(messageObject);
                             }
+                            File stickerAttach = stickerImage != null ? stickerImage.file : null;
                             if (!waitingForPasscode && !messageObject.isSecretMedia() && (messageObject.type == MessageObject.TYPE_PHOTO || stickerAttach != null)) {
                                 File attach = stickerAttach != null ? stickerAttach : getFileLoader().getPathToMessage(messageObject.messageOwner);
                                 File blurredAttach;
@@ -5474,9 +5486,8 @@ public class NotificationsController extends BaseController implements Notificat
                                 String mimeType;
                                 if (stickerAttach == null) {
                                     mimeType = "image/jpeg";
-                                } else if (isStaticWebpSticker(messageObject) && !attach.exists()) {
-                                    // static webp still downloading: served through NotificationImageProvider below
-                                    mimeType = "image/webp";
+                                } else if (attach == stickerAttach && stickerImage.mimeType != null) {
+                                    mimeType = stickerImage.mimeType;
                                 } else {
                                     mimeType = sniffNotificationImageMime(attach);
                                     if (mimeType == null) {
@@ -5499,6 +5510,9 @@ public class NotificationsController extends BaseController implements Notificat
                                             .appendPath(currentAccount + "")
                                             .appendPath(attach.getName())
                                             .appendQueryParameter("final_path", attach.getAbsolutePath());
+                                    if (stickerImage != null && stickerImage.fallback != null) {
+                                        _uri.appendQueryParameter("fallback", stickerImage.fallback.getAbsolutePath());
+                                    }
                                     uri = _uri.build();
                                 } else {
                                     uri = null;
@@ -5886,43 +5900,128 @@ public class NotificationsController extends BaseController implements Notificat
         return new Pair<>(storiesCount, hidden);
     }
 
+    private static final long NOTIFICATION_STICKER_MAX_DOCUMENT_SIZE = 1024 * 1024;
+    private static final long NOTIFICATION_STICKER_REBUILD_DELAY = 300;
+
+    private static class StickerNotificationImage {
+        final File file;
+        final String mimeType;
+        final File fallback;
+
+        StickerNotificationImage(File file, String mimeType, File fallback) {
+            this.file = file;
+            this.mimeType = mimeType;
+            this.fallback = fallback;
+        }
+    }
+
     /**
-     * Picks an already downloaded still image for a sticker message (static webp, TGS or video sticker).
-     * Never returns the .tgs / .webm document itself and never decodes anything; returns null when
-     * nothing usable is on disk yet, in which case the notification falls back to text only.
+     * Picks the best still image for a sticker message (static webp, TGS or video sticker) that can be shown
+     * right now, best first: full static webp &gt; document thumb. Never returns the .tgs / .webm document
+     * itself and never decodes on this thread. When nothing good is on disk yet, it asks FileLoader for the
+     * (size limited) document and the thumb once; their fileLoaded triggers one silent rebuild.
+     * Returns null when nothing is usable now, so the notification stays text only.
+     * Runs on notificationsQueue.
      */
-    private File getStickerNotificationImage(MessageObject messageObject) {
+    private StickerNotificationImage getStickerNotificationImage(MessageObject messageObject) {
         try {
             TLRPC.Document document = messageObject.getDocument();
-            if (document == null) {
+            if (document == null || DialogObject.isEncryptedDialog(messageObject.getDialogId())) {
                 return null;
             }
-            if (isStaticWebpSticker(messageObject)) {
-                File file = getFileLoader().getPathToMessage(messageObject.messageOwner);
-                if (sniffNotificationImageMime(file) != null) {
-                    return file;
+            boolean staticWebp = isStaticWebpSticker(messageObject);
+            boolean smallDocument = document.size > 0 && document.size <= NOTIFICATION_STICKER_MAX_DOCUMENT_SIZE;
+            File documentFile = findStickerDocumentFile(messageObject, document);
+            if (staticWebp) {
+                if (documentFile != null) {
+                    String mime = sniffNotificationImageMime(documentFile);
+                    if (mime != null) {
+                        return new StickerNotificationImage(documentFile, mime, null);
+                    }
+                } else if (smallDocument) {
+                    requestStickerNotificationLoad(FileLoader.getAttachFileName(document), () -> getFileLoader().loadFile(document, messageObject, FileLoader.PRIORITY_HIGH, 1));
                 }
-                if (!file.exists() && getFileLoader().isLoadingFile(file.getName())) {
-                    // keep the old behaviour: msg_media_raw URI via NotificationImageProvider while it downloads
-                    return file;
-                }
+            } else if (documentFile == null && smallDocument) {
+                requestStickerNotificationLoad(FileLoader.getAttachFileName(document), () -> getFileLoader().loadFile(document, messageObject, FileLoader.PRIORITY_HIGH, 1));
             }
+
             TLRPC.PhotoSize thumb = FileLoader.getClosestPhotoSizeWithSize(document.thumbs, 320, false, null, true);
             if (thumb == null || thumb.location == null || thumb instanceof TLRPC.TL_photoCachedSize) {
-                return null;
+                thumb = null;
             }
-            File file = getFileLoader().getPathToAttach(thumb, true);
-            if (sniffNotificationImageMime(file) != null) {
-                return file;
+            File thumbFile = thumb != null ? findStickerThumbFile(thumb) : null;
+
+            if (staticWebp && documentFile == null && getFileLoader().isLoadingFile(FileLoader.getAttachFileName(document))) {
+                // keep the old behaviour: msg_media_raw URI via NotificationImageProvider while it downloads,
+                // stickers are downloaded into the cache dir; fall back to the thumb if it times out
+                return new StickerNotificationImage(getFileLoader().getPathToAttach(document, true), "image/webp", thumbFile);
             }
-            file = getFileLoader().getPathToAttach(thumb, false);
-            if (sniffNotificationImageMime(file) != null) {
-                return file;
+            if (thumbFile != null) {
+                return new StickerNotificationImage(thumbFile, sniffNotificationImageMime(thumbFile), null);
+            }
+            if (thumb != null) {
+                ImageLocation thumbLocation = ImageLocation.getForDocument(thumb, document);
+                if (thumbLocation != null) {
+                    requestStickerNotificationLoad(FileLoader.getAttachFileName(thumb, "webp"), () -> getFileLoader().loadFile(thumbLocation, messageObject, "webp", FileLoader.PRIORITY_HIGH, 1));
+                }
             }
         } catch (Exception e) {
             FileLog.e(e);
         }
         return null;
+    }
+
+    /** The sticker document on disk: chat UI loads stickers into the cache dir, so check that first. */
+    private File findStickerDocumentFile(MessageObject messageObject, TLRPC.Document document) {
+        File file = getFileLoader().getPathToAttach(document, true);
+        if (file.exists() && file.length() > 0) {
+            return file;
+        }
+        file = getFileLoader().getPathToMessage(messageObject.messageOwner);
+        if (file.exists() && file.length() > 0) {
+            return file;
+        }
+        return null;
+    }
+
+    /** Sticker thumbs are stored as .webp by the chat UI and by our own request, older code used the .jpg name. */
+    private File findStickerThumbFile(TLRPC.PhotoSize thumb) {
+        File[] candidates = new File[] {
+            getFileLoader().getPathToAttach(thumb, "webp", true),
+            getFileLoader().getPathToAttach(thumb, true),
+            getFileLoader().getPathToAttach(thumb, "webp", false),
+            getFileLoader().getPathToAttach(thumb, false)
+        };
+        for (File file : candidates) {
+            if (sniffNotificationImageMime(file) != null) {
+                return file;
+            }
+        }
+        return null;
+    }
+
+    /** Requests a file at most once per session; its fileLoaded schedules one silent rebuild. notificationsQueue only. */
+    private void requestStickerNotificationLoad(String fileName, Runnable load) {
+        if (TextUtils.isEmpty(fileName)) {
+            return;
+        }
+        if (requestedStickerLoads.size() > 500) {
+            requestedStickerLoads.clear();
+        }
+        if (!requestedStickerLoads.add(fileName)) {
+            return;
+        }
+        pendingStickerLoads.add(fileName);
+        load.run();
+    }
+
+    /**
+     * Coalesces sticker preview arrivals into one rebuild. notifyAboutLast = false: no sound / vibration,
+     * low priority, silent channel, same as edits and read updates. Dismissed dialogs stay dismissed (dismissDate).
+     */
+    private void scheduleStickerNotificationRebuild() {
+        notificationsQueue.cancelRunnable(stickerRebuildRunnable);
+        notificationsQueue.postRunnable(stickerRebuildRunnable, NOTIFICATION_STICKER_REBUILD_DELAY);
     }
 
     private static boolean isStaticWebpSticker(MessageObject messageObject) {
