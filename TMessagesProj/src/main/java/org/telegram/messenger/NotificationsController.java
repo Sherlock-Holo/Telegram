@@ -5430,8 +5430,12 @@ public class NotificationsController extends BaseController implements Notificat
                     if (!DialogObject.isEncryptedDialog(dialogId)) {
                         boolean setPhoto = false;
                         if (preview[0] && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && !((ActivityManager) ApplicationLoader.applicationContext.getSystemService(Context.ACTIVITY_SERVICE)).isLowRamDevice()) {
-                            if (!waitingForPasscode && !messageObject.isSecretMedia() && (messageObject.type == MessageObject.TYPE_PHOTO || messageObject.isSticker())) {
-                                File attach = getFileLoader().getPathToMessage(messageObject.messageOwner);
+                            File stickerAttach = null;
+                            if (!waitingForPasscode && !messageObject.isSecretMedia() && (messageObject.isSticker() || messageObject.isAnimatedSticker())) {
+                                stickerAttach = getStickerNotificationImage(messageObject);
+                            }
+                            if (!waitingForPasscode && !messageObject.isSecretMedia() && (messageObject.type == MessageObject.TYPE_PHOTO || stickerAttach != null)) {
+                                File attach = stickerAttach != null ? stickerAttach : getFileLoader().getPathToMessage(messageObject.messageOwner);
                                 File blurredAttach;
                                 if (attach.exists() && messageObject.hasMediaSpoilers()) {
                                     blurredAttach = new File(attach.getParentFile(), attach.getName() + ".blur.jpg");
@@ -5467,7 +5471,10 @@ public class NotificationsController extends BaseController implements Notificat
                                     blurredAttach = null;
                                 }
                                 NotificationCompat.MessagingStyle.Message msg = new NotificationCompat.MessagingStyle.Message(message, ((long) messageObject.messageOwner.date) * 1000L, person);
-                                String mimeType = messageObject.isSticker() ? "image/webp" : "image/jpeg";
+                                String mimeType = stickerAttach != null ? sniffNotificationImageMime(attach) : "image/jpeg";
+                                if (mimeType == null) {
+                                    mimeType = "image/jpeg";
+                                }
                                 Uri uri;
                                 if (attach.exists()) {
                                     try {
@@ -5869,6 +5876,78 @@ public class NotificationsController extends BaseController implements Notificat
             avatars.clear();
         }
         return new Pair<>(storiesCount, hidden);
+    }
+
+    /**
+     * Picks an already downloaded still image for a sticker message (static webp, TGS or video sticker).
+     * Never returns the .tgs / .webm document itself and never decodes anything; returns null when
+     * nothing usable is on disk yet, in which case the notification falls back to text only.
+     */
+    private File getStickerNotificationImage(MessageObject messageObject) {
+        try {
+            TLRPC.Document document = messageObject.getDocument();
+            if (document == null) {
+                return null;
+            }
+            if (!messageObject.isAnimatedSticker() && !messageObject.isVideoSticker() && "image/webp".equals(document.mime_type)) {
+                File file = getFileLoader().getPathToMessage(messageObject.messageOwner);
+                if (sniffNotificationImageMime(file) != null) {
+                    return file;
+                }
+            }
+            TLRPC.PhotoSize thumb = FileLoader.getClosestPhotoSizeWithSize(document.thumbs, 320, false, null, true);
+            if (thumb == null || thumb.location == null || thumb instanceof TLRPC.TL_photoCachedSize) {
+                return null;
+            }
+            File file = getFileLoader().getPathToAttach(thumb, true);
+            if (sniffNotificationImageMime(file) != null) {
+                return file;
+            }
+            file = getFileLoader().getPathToAttach(thumb, false);
+            if (sniffNotificationImageMime(file) != null) {
+                return file;
+            }
+        } catch (Exception e) {
+            FileLog.e(e);
+        }
+        return null;
+    }
+
+    /**
+     * Returns the image mime type of a file by its magic bytes (webp / jpeg / png), or null when the file
+     * is missing or is not one of those (e.g. a gzip'ed .tgs or a .webm).
+     */
+    private static String sniffNotificationImageMime(File file) {
+        if (file == null || !file.exists() || file.length() < 12) {
+            return null;
+        }
+        byte[] header = new byte[12];
+        try (java.io.FileInputStream in = new java.io.FileInputStream(file)) {
+            int read = 0;
+            while (read < header.length) {
+                int r = in.read(header, read, header.length - read);
+                if (r < 0) {
+                    break;
+                }
+                read += r;
+            }
+            if (read < header.length) {
+                return null;
+            }
+        } catch (Exception e) {
+            FileLog.e(e);
+            return null;
+        }
+        if (header[0] == 'R' && header[1] == 'I' && header[2] == 'F' && header[3] == 'F' && header[8] == 'W' && header[9] == 'E' && header[10] == 'B' && header[11] == 'P') {
+            return "image/webp";
+        }
+        if ((header[0] & 0xFF) == 0xFF && (header[1] & 0xFF) == 0xD8 && (header[2] & 0xFF) == 0xFF) {
+            return "image/jpeg";
+        }
+        if ((header[0] & 0xFF) == 0x89 && header[1] == 'P' && header[2] == 'N' && header[3] == 'G') {
+            return "image/png";
+        }
+        return null;
     }
 
     public static Person.Builder loadRoundAvatar(long dialogId, File avatar, Person.Builder personBuilder) {
