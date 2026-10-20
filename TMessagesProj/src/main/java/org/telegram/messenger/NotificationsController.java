@@ -41,6 +41,7 @@ import android.graphics.drawable.BitmapDrawable;
 import android.media.AudioAttributes;
 import android.media.AudioManager;
 import android.media.SoundPool;
+import android.net.ConnectivityManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.PowerManager;
@@ -5938,11 +5939,17 @@ public class NotificationsController extends BaseController implements Notificat
             File documentFile = findStickerDocumentFile(messageObject, document);
             boolean lottie = !staticWebp && (messageObject.isAnimatedSticker() || "application/x-tgsticker".equals(document.mime_type));
             boolean video = !staticWebp && !lottie && messageObject.isVideoSticker();
+            // the full document is only fetched when the user's auto-download rules allow it right now; thumbs are tiny and always ok
+            boolean mayLoadDocument = documentFile == null && smallDocument && (staticWebp || lottie || video) && canAutoDownloadStickerDocument(messageObject);
             if (lottie || video) {
                 // best: a still frame we decoded earlier (cached by document id, shared by all accounts)
                 File frameFile = getStickerFrameCacheFile(document.id);
                 String frameMime = sniffNotificationImageMime(frameFile);
                 if (frameMime != null) {
+                    long now = System.currentTimeMillis();
+                    if (now - frameFile.lastModified() > 60 * 60 * 1000L) {
+                        frameFile.setLastModified(now); // LRU for trimStickerFrameCache
+                    }
                     return new StickerNotificationImage(frameFile, frameMime, null);
                 }
                 if (documentFile != null && smallDocument) {
@@ -5955,10 +5962,10 @@ public class NotificationsController extends BaseController implements Notificat
                     if (mime != null) {
                         return new StickerNotificationImage(documentFile, mime, null);
                     }
-                } else if (smallDocument) {
+                } else if (mayLoadDocument) {
                     requestStickerNotificationLoad(FileLoader.getAttachFileName(document), () -> getFileLoader().loadFile(document, messageObject, FileLoader.PRIORITY_HIGH, 1));
                 }
-            } else if ((lottie || video) && documentFile == null && smallDocument) {
+            } else if ((lottie || video) && mayLoadDocument) {
                 // once the document lands, the rebuild finds it on disk and decodes a frame
                 requestStickerNotificationLoad(FileLoader.getAttachFileName(document), () -> getFileLoader().loadFile(document, messageObject, FileLoader.PRIORITY_HIGH, 1));
             }
@@ -5987,6 +5994,28 @@ public class NotificationsController extends BaseController implements Notificat
             FileLog.e(e);
         }
         return null;
+    }
+
+    /**
+     * Same rule the chat UI uses for auto-downloading stickers (DownloadController treats them as photos:
+     * Wi-Fi / mobile / roaming preset enabled + per-peer mask), plus Android's system Data Saver on metered
+     * networks. When this says no, only the thumb is requested.
+     */
+    private boolean canAutoDownloadStickerDocument(MessageObject messageObject) {
+        try {
+            if (getDownloadController().canDownloadMedia(messageObject.messageOwner) == 0) {
+                return false;
+            }
+            ConnectivityManager connectivityManager = (ConnectivityManager) ApplicationLoader.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (connectivityManager != null && connectivityManager.isActiveNetworkMetered()
+                    && connectivityManager.getRestrictBackgroundStatus() == ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED) {
+                return false;
+            }
+            return true;
+        } catch (Exception e) {
+            FileLog.e(e);
+            return false;
+        }
     }
 
     /** The sticker document on disk: chat UI loads stickers into the cache dir, so check that first. */
