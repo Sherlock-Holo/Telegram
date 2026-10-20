@@ -114,7 +114,7 @@ public class ApplicationLoader extends Application {
     }
 
     protected PushListenerController.IPushListenerServiceProvider onCreatePushProvider() {
-        return PushListenerController.NoPushListenerServiceProvider.INSTANCE;
+        return NoPushListenerServiceProvider.INSTANCE;
     }
 
     public static String getApplicationId() {
