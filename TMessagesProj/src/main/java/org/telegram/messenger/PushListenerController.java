@@ -1822,34 +1822,4 @@ public class PushListenerController {
             return hasServices;
         }
     }
-
-    /**
-     * Fork: "no push token" provider. hasServices() == false makes ApplicationLoader.initPushServices()
-     * take the already-supported "no push service" path (status string only, no registerDevice call),
-     * so the app relies on the MTProto push connection (ConnectionTypePush) + NotificationsService.
-     */
-    public final static class NoPushListenerServiceProvider implements IPushListenerServiceProvider {
-        public final static NoPushListenerServiceProvider INSTANCE = new NoPushListenerServiceProvider();
-
-        private NoPushListenerServiceProvider() {}
-
-        @Override
-        public boolean hasServices() {
-            return false;
-        }
-
-        @Override
-        public String getLogTitle() {
-            return "Telegram background connection";
-        }
-
-        @Override
-        public void onRequestPushToken() {
-        }
-
-        @Override
-        public int getPushType() {
-            return PUSH_TYPE_FIREBASE;
-        }
-    }
 }
