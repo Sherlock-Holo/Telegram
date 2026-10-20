@@ -161,6 +161,18 @@ android {
 
     defaultConfig.versionCode = Integer.parseInt(APP_VERSION_CODE)
 
+    // Fork revision: commits on top of upstream "update to 13.0.2 (7175)" (f32ffeec7).
+    // Matches the tag release-<APP_VERSION_NAME>-<APP_VERSION_CODE>-holo-<rev>.
+    // -PHOLO_REV=<n> overrides; needs full commit history (CI: fetch-depth 0).
+    // Only versionName gets the suffix; APP_VERSION_NAME / BUILD_VERSION_STRING stay "13.0.2".
+    def holoRev = providers.gradleProperty("HOLO_REV").orElse(
+            providers.exec {
+                commandLine "git", "rev-list", "--count", "f32ffeec7..HEAD"
+                workingDir rootDir
+                ignoreExitValue = true
+            }.standardOutput.asText.map { it.trim() }
+    ).getOrElse("")
+
     applicationVariants.all { variant ->
         variant.outputs.all { output ->
             outputFileName = "app.apk"
@@ -178,7 +190,7 @@ android {
     defaultConfig {
         minSdkVersion 23
         targetSdkVersion 36
-        versionName APP_VERSION_NAME
+        versionName holoRev.isEmpty() ? APP_VERSION_NAME : "${APP_VERSION_NAME}-holo-${holoRev}"
         ndkVersion "27.2.12479018"
 
         multiDexEnabled true
