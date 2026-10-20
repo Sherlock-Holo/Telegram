@@ -124,8 +124,8 @@ public class NotificationsController extends BaseController implements Notificat
     // Sticker notification previews. All of these are only touched on notificationsQueue.
     private final HashSet<String> pendingStickerLoads = new HashSet<>();   // file names whose fileLoaded triggers a silent rebuild
     private final HashSet<String> requestedStickerLoads = new HashSet<>(); // file names already requested once, never re-requested
-    private final HashSet<Long> pendingStickerDecodes = new HashSet<>();   // document ids being decoded to a still frame
-    private final HashSet<Long> failedStickerDecodes = new HashSet<>();    // document ids that failed / timed out, not retried
+    private final HashSet<String> pendingStickerDecodes = new HashSet<>();   // frame cache names being decoded to a still frame
+    private final HashSet<String> failedStickerDecodes = new HashSet<>();    // frame cache names that failed / timed out, not retried
     private final Runnable stickerRebuildRunnable = () -> showOrUpdateNotification(false);
     public final ArrayList<MessageObject> popupMessages = new ArrayList<>();
     public ArrayList<MessageObject> popupReplyMessages = new ArrayList<>();
@@ -5447,7 +5447,7 @@ public class NotificationsController extends BaseController implements Notificat
                         boolean setPhoto = false;
                         if (preview[0] && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && !((ActivityManager) ApplicationLoader.applicationContext.getSystemService(Context.ACTIVITY_SERVICE)).isLowRamDevice()) {
                             StickerNotificationImage stickerImage = null;
-                            if (!waitingForPasscode && !messageObject.isSecretMedia() && messageObject.messageOwner.media instanceof TLRPC.TL_messageMediaDocument && (messageObject.isSticker() || messageObject.isAnimatedSticker())) {
+                            if (!waitingForPasscode && !messageObject.isSecretMedia() && (messageObject.messageOwner.media instanceof TLRPC.TL_messageMediaDocument && (messageObject.isSticker() || messageObject.isAnimatedSticker()) || isSingleEmojiNotificationSticker(messageObject))) {
                                 stickerImage = getStickerNotificationImage(messageObject);
                             }
                             File stickerAttach = stickerImage != null ? stickerImage.file : null;
@@ -5934,16 +5934,34 @@ public class NotificationsController extends BaseController implements Notificat
             if (document == null || DialogObject.isEncryptedDialog(messageObject.getDialogId())) {
                 return null;
             }
-            boolean staticWebp = isStaticWebpSticker(messageObject);
+            boolean singleEmoji = !(messageObject.messageOwner.media instanceof TLRPC.TL_messageMediaDocument);
+            if (singleEmoji && !isSingleEmojiNotificationSticker(messageObject)) {
+                return null;
+            }
+            // skin tone of a single colored emoji (👍🏽): applied while rendering, thumbs only have the default tone
+            int fitzModifier = singleEmoji ? getEmojiFitzModifier(messageObject.emojiAnimatedStickerColor) : 0;
+            // a single emoji's document is not part of the message, refresh its file reference through its set
+            Object parentObject = messageObject;
+            if (singleEmoji) {
+                TLRPC.InputStickerSet inputStickerSet = MessageObject.getInputStickerSet(document);
+                if (inputStickerSet != null) {
+                    parentObject = inputStickerSet;
+                }
+            }
+            final Object loadParent = parentObject;
+            boolean staticWebp = fitzModifier == 0 && isStaticWebpSticker(messageObject);
             boolean smallDocument = document.size > 0 && document.size <= NOTIFICATION_STICKER_MAX_DOCUMENT_SIZE;
-            File documentFile = findStickerDocumentFile(messageObject, document);
+            File documentFile = findStickerDocumentFile(singleEmoji ? null : messageObject, document);
             boolean lottie = !staticWebp && (messageObject.isAnimatedSticker() || "application/x-tgsticker".equals(document.mime_type));
-            boolean video = !staticWebp && !lottie && messageObject.isVideoSticker();
+            boolean video = !staticWebp && !lottie && (messageObject.isVideoSticker() || "video/webm".equals(document.mime_type));
+            if (fitzModifier != 0 && !lottie) {
+                fitzModifier = 0;
+            }
             // the full document is only fetched when the user's auto-download rules allow it right now; thumbs are tiny and always ok
-            boolean mayLoadDocument = documentFile == null && smallDocument && (staticWebp || lottie || video) && canAutoDownloadStickerDocument(messageObject);
+            boolean mayLoadDocument = documentFile == null && smallDocument && (staticWebp || lottie || video) && canAutoDownloadStickerDocument(messageObject, singleEmoji, document);
             if (lottie || video) {
                 // best: a still frame we decoded earlier (cached by document id, shared by all accounts)
-                File frameFile = getStickerFrameCacheFile(document.id);
+                File frameFile = getStickerFrameCacheFile(document.id, fitzModifier);
                 String frameMime = sniffNotificationImageMime(frameFile);
                 if (frameMime != null) {
                     long now = System.currentTimeMillis();
@@ -5953,7 +5971,7 @@ public class NotificationsController extends BaseController implements Notificat
                     return new StickerNotificationImage(frameFile, frameMime, null);
                 }
                 if (documentFile != null && smallDocument) {
-                    requestStickerFrameDecode(document.id, documentFile, lottie);
+                    requestStickerFrameDecode(frameFile, documentFile, lottie, fitzModifier);
                 }
             }
             if (staticWebp) {
@@ -5963,13 +5981,16 @@ public class NotificationsController extends BaseController implements Notificat
                         return new StickerNotificationImage(documentFile, mime, null);
                     }
                 } else if (mayLoadDocument) {
-                    requestStickerNotificationLoad(FileLoader.getAttachFileName(document), () -> getFileLoader().loadFile(document, messageObject, FileLoader.PRIORITY_HIGH, 1));
+                    requestStickerNotificationLoad(FileLoader.getAttachFileName(document), () -> getFileLoader().loadFile(document, loadParent, FileLoader.PRIORITY_HIGH, 1));
                 }
             } else if ((lottie || video) && mayLoadDocument) {
                 // once the document lands, the rebuild finds it on disk and decodes a frame
-                requestStickerNotificationLoad(FileLoader.getAttachFileName(document), () -> getFileLoader().loadFile(document, messageObject, FileLoader.PRIORITY_HIGH, 1));
+                requestStickerNotificationLoad(FileLoader.getAttachFileName(document), () -> getFileLoader().loadFile(document, loadParent, FileLoader.PRIORITY_HIGH, 1));
             }
 
+            if (fitzModifier != 0) {
+                return null; // a default-tone thumb would show the wrong skin tone; wait for the decoded frame
+            }
             TLRPC.PhotoSize thumb = FileLoader.getClosestPhotoSizeWithSize(document.thumbs, 320, false, null, true);
             if (thumb == null || thumb.location == null || thumb instanceof TLRPC.TL_photoCachedSize) {
                 thumb = null;
@@ -5987,7 +6008,7 @@ public class NotificationsController extends BaseController implements Notificat
             if (thumb != null) {
                 ImageLocation thumbLocation = ImageLocation.getForDocument(thumb, document);
                 if (thumbLocation != null) {
-                    requestStickerNotificationLoad(FileLoader.getAttachFileName(thumb, "webp"), () -> getFileLoader().loadFile(thumbLocation, messageObject, "webp", FileLoader.PRIORITY_HIGH, 1));
+                    requestStickerNotificationLoad(FileLoader.getAttachFileName(thumb, "webp"), () -> getFileLoader().loadFile(thumbLocation, loadParent, "webp", FileLoader.PRIORITY_HIGH, 1));
                 }
             }
         } catch (Exception e) {
@@ -6001,9 +6022,15 @@ public class NotificationsController extends BaseController implements Notificat
      * Wi-Fi / mobile / roaming preset enabled + per-peer mask), plus Android's system Data Saver on metered
      * networks. When this says no, only the thumb is requested.
      */
-    private boolean canAutoDownloadStickerDocument(MessageObject messageObject) {
+    private boolean canAutoDownloadStickerDocument(MessageObject messageObject, boolean singleEmoji, TLRPC.Document document) {
         try {
-            if (getDownloadController().canDownloadMedia(messageObject.messageOwner) == 0) {
+            if (singleEmoji) {
+                // the message has no media, so canDownloadMedia(Message) would say no; use the current network's
+                // preset for stickers (photo type) directly
+                if (!getDownloadController().canDownloadMedia(DownloadController.AUTODOWNLOAD_TYPE_PHOTO, document.size)) {
+                    return false;
+                }
+            } else if (getDownloadController().canDownloadMedia(messageObject.messageOwner) == 0) {
                 return false;
             }
             ConnectivityManager connectivityManager = (ConnectivityManager) ApplicationLoader.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE);
@@ -6018,11 +6045,17 @@ public class NotificationsController extends BaseController implements Notificat
         }
     }
 
-    /** The sticker document on disk: chat UI loads stickers into the cache dir, so check that first. */
+    /**
+     * The sticker document on disk: chat UI loads stickers into the cache dir, so check that first.
+     * messageObject is null for a single emoji, whose document is not the message's media.
+     */
     private File findStickerDocumentFile(MessageObject messageObject, TLRPC.Document document) {
         File file = getFileLoader().getPathToAttach(document, true);
         if (file.exists() && file.length() > 0) {
             return file;
+        }
+        if (messageObject == null) {
+            return null;
         }
         file = getFileLoader().getPathToMessage(messageObject.messageOwner);
         if (file.exists() && file.length() > 0) {
@@ -6097,9 +6130,9 @@ public class NotificationsController extends BaseController implements Notificat
         return notificationStickerCacheDir;
     }
 
-    private static File getStickerFrameCacheFile(long documentId) {
+    private static File getStickerFrameCacheFile(long documentId, int fitzModifier) {
         File dir = getStickerFrameCacheDir();
-        return dir == null ? null : new File(dir, "sticker_" + documentId + ".webp");
+        return dir == null ? null : new File(dir, "sticker_" + documentId + (fitzModifier != 0 ? "_f" + fitzModifier : "") + ".webp");
     }
 
     /**
@@ -6108,37 +6141,37 @@ public class NotificationsController extends BaseController implements Notificat
      * marks the document failed so it is not retried and the notification keeps the thumb / text.
      * notificationsQueue only.
      */
-    private void requestStickerFrameDecode(long documentId, File source, boolean lottie) {
-        if (failedStickerDecodes.contains(documentId) || pendingStickerDecodes.contains(documentId)) {
+    private void requestStickerFrameDecode(File out, File source, boolean lottie, int fitzModifier) {
+        if (out == null) {
             return;
         }
-        File out = getStickerFrameCacheFile(documentId);
-        if (out == null) {
+        String key = out.getName();
+        if (failedStickerDecodes.contains(key) || pendingStickerDecodes.contains(key)) {
             return;
         }
         if (failedStickerDecodes.size() > 500) {
             failedStickerDecodes.clear();
         }
-        pendingStickerDecodes.add(documentId);
+        pendingStickerDecodes.add(key);
         Runnable timeout = () -> {
-            if (pendingStickerDecodes.remove(documentId)) {
-                FileLog.d("sticker notification frame decode timed out " + documentId);
-                failedStickerDecodes.add(documentId);
+            if (pendingStickerDecodes.remove(key)) {
+                FileLog.d("sticker notification frame decode timed out " + key);
+                failedStickerDecodes.add(key);
             }
         };
         notificationsQueue.postRunnable(timeout, NOTIFICATION_STICKER_DECODE_TIMEOUT);
         int account = currentAccount;
         getNotificationStickerQueue().postRunnable(() -> {
-            boolean ok = decodeStickerFrame(source, out, lottie, account);
+            boolean ok = decodeStickerFrame(source, out, lottie, fitzModifier, account);
             notificationsQueue.postRunnable(() -> {
                 notificationsQueue.cancelRunnable(timeout);
-                if (!pendingStickerDecodes.remove(documentId)) {
+                if (!pendingStickerDecodes.remove(key)) {
                     return; // timed out; a late result is still picked up by the next regular update
                 }
                 if (ok) {
                     scheduleStickerNotificationRebuild();
                 } else {
-                    failedStickerDecodes.add(documentId);
+                    failedStickerDecodes.add(key);
                 }
             });
         });
@@ -6148,7 +6181,7 @@ public class NotificationsController extends BaseController implements Notificat
      * Renders only the first frame, straight at &lt;= {@link #NOTIFICATION_STICKER_FRAME_SIZE} px, never the whole
      * animation, writes it as webp via a temp file + rename, and recycles every bitmap. notificationStickerQueue only.
      */
-    private static boolean decodeStickerFrame(File source, File out, boolean lottie, int account) {
+    private static boolean decodeStickerFrame(File source, File out, boolean lottie, int fitzModifier, int account) {
         if (sniffNotificationImageMime(out) != null) {
             return true; // another account already decoded this document
         }
@@ -6159,7 +6192,7 @@ public class NotificationsController extends BaseController implements Notificat
         File tmp = new File(out.getParentFile(), out.getName() + ".tmp");
         try {
             if (lottie) {
-                RLottieNative lottieNative = RLottieNative.createFromFile(source.getAbsolutePath());
+                RLottieNative lottieNative = RLottieNative.createFromFile(source.getAbsolutePath(), null, null, null, fitzModifier, null);
                 if (lottieNative == null) {
                     return false;
                 }
@@ -6267,6 +6300,43 @@ public class NotificationsController extends BaseController implements Notificat
             }
         } catch (Throwable e) {
             FileLog.e(e);
+        }
+    }
+
+    /**
+     * A text message that is a single emoji / single custom emoji which the chat UI shows as a big sticker
+     * (MessageObject.checkBigAnimatedEmoji filled emojiAnimatedSticker). Skipped when animated emoji in chats are
+     * turned off (LiteMode FLAG_ANIMATED_EMOJI_CHAT), like Telegram X. Only the already resolved document is
+     * used: if just emojiAnimatedStickerId is known nothing is fetched and the notification stays text only.
+     */
+    private static boolean isSingleEmojiNotificationSticker(MessageObject messageObject) {
+        if (messageObject.emojiAnimatedSticker == null) {
+            return false;
+        }
+        TLRPC.MessageMedia media = messageObject.messageOwner.media;
+        if (media != null && !(media instanceof TLRPC.TL_messageMediaEmpty)) {
+            return false;
+        }
+        try {
+            return LiteMode.isEnabled(LiteMode.FLAG_ANIMATED_EMOJI_CHAT);
+        } catch (Exception e) {
+            FileLog.e(e);
+            return false;
+        }
+    }
+
+    /** Same mapping as ImageLoader uses for the "_c1".."_c5" big emoji filters. */
+    private static int getEmojiFitzModifier(String color) {
+        if (color == null) {
+            return 0;
+        }
+        switch (color) {
+            case "_c1": return 12;
+            case "_c2": return 3;
+            case "_c3": return 4;
+            case "_c4": return 5;
+            case "_c5": return 6;
+            default: return 0;
         }
     }
 
