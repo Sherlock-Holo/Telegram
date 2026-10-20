@@ -5431,7 +5431,7 @@ public class NotificationsController extends BaseController implements Notificat
                         boolean setPhoto = false;
                         if (preview[0] && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && !((ActivityManager) ApplicationLoader.applicationContext.getSystemService(Context.ACTIVITY_SERVICE)).isLowRamDevice()) {
                             File stickerAttach = null;
-                            if (!waitingForPasscode && !messageObject.isSecretMedia() && (messageObject.isSticker() || messageObject.isAnimatedSticker())) {
+                            if (!waitingForPasscode && !messageObject.isSecretMedia() && messageObject.messageOwner.media instanceof TLRPC.TL_messageMediaDocument && (messageObject.isSticker() || messageObject.isAnimatedSticker())) {
                                 stickerAttach = getStickerNotificationImage(messageObject);
                             }
                             if (!waitingForPasscode && !messageObject.isSecretMedia() && (messageObject.type == MessageObject.TYPE_PHOTO || stickerAttach != null)) {
@@ -5471,9 +5471,17 @@ public class NotificationsController extends BaseController implements Notificat
                                     blurredAttach = null;
                                 }
                                 NotificationCompat.MessagingStyle.Message msg = new NotificationCompat.MessagingStyle.Message(message, ((long) messageObject.messageOwner.date) * 1000L, person);
-                                String mimeType = stickerAttach != null ? sniffNotificationImageMime(attach) : "image/jpeg";
-                                if (mimeType == null) {
+                                String mimeType;
+                                if (stickerAttach == null) {
                                     mimeType = "image/jpeg";
+                                } else if (isStaticWebpSticker(messageObject) && !attach.exists()) {
+                                    // static webp still downloading: served through NotificationImageProvider below
+                                    mimeType = "image/webp";
+                                } else {
+                                    mimeType = sniffNotificationImageMime(attach);
+                                    if (mimeType == null) {
+                                        mimeType = "image/jpeg";
+                                    }
                                 }
                                 Uri uri;
                                 if (attach.exists()) {
@@ -5889,9 +5897,13 @@ public class NotificationsController extends BaseController implements Notificat
             if (document == null) {
                 return null;
             }
-            if (!messageObject.isAnimatedSticker() && !messageObject.isVideoSticker() && "image/webp".equals(document.mime_type)) {
+            if (isStaticWebpSticker(messageObject)) {
                 File file = getFileLoader().getPathToMessage(messageObject.messageOwner);
                 if (sniffNotificationImageMime(file) != null) {
+                    return file;
+                }
+                if (!file.exists() && getFileLoader().isLoadingFile(file.getName())) {
+                    // keep the old behaviour: msg_media_raw URI via NotificationImageProvider while it downloads
                     return file;
                 }
             }
@@ -5911,6 +5923,11 @@ public class NotificationsController extends BaseController implements Notificat
             FileLog.e(e);
         }
         return null;
+    }
+
+    private static boolean isStaticWebpSticker(MessageObject messageObject) {
+        TLRPC.Document document = messageObject.getDocument();
+        return document != null && !messageObject.isAnimatedSticker() && !messageObject.isVideoSticker() && "image/webp".equals(document.mime_type);
     }
 
     /**
