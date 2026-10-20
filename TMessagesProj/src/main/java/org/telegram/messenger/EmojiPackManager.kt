@@ -447,7 +447,9 @@ object EmojiPackManager {
             }) ?: return
             for (f in stale) {
                 val name = f.name
-                if (name.endsWith(".old")) {
+                // A bare ".old" has an empty id (substring(1, 0) would throw and abort installBundled() every
+                // time): it is not a pack copy, so it falls through and is removed like the other leftovers.
+                if (name.endsWith(".old") && name.length > ".old".length + 1) {
                     val id = name.substring(1, name.length - 4)
                     val target = File(root, id)
                     if (isSafeId(id) && !target.exists()) {
