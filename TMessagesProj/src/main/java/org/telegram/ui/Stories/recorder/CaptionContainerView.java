@@ -33,6 +33,7 @@ import android.text.Editable;
 import android.text.SpannableStringBuilder;
 import android.text.TextPaint;
 import android.text.TextWatcher;
+import android.text.style.ImageSpan;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.RoundedCorner;
@@ -360,6 +361,12 @@ public class CaptionContainerView extends FrameLayout {
 
             @Override
             public void afterTextChanged(Editable s) {
+                ImageSpan[] spans = s.getSpans(0, s.length(), ImageSpan.class);
+                for (int i = 0; i < spans.length; i++) {
+                    s.removeSpan(spans[i]);
+                }
+                Emoji.replaceEmoji(s, editText.getEditText().getPaint().getFontMetricsInt(), false, null);
+
                 codePointCount = Character.codePointCount(s, 0, s.length());
                 String limitText = null;
                 final int limit = getCaptionLimit();
