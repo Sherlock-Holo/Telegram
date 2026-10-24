@@ -2116,7 +2116,7 @@ public class MessageObject {
             int[] emojiOnly = allowsBigEmoji() ? new int[1] : null;
             messageText = Emoji.replaceEmoji(messageText, paint.getFontMetricsInt(), false, emojiOnly);
             messageText = replaceAnimatedEmoji(messageText, paint.getFontMetricsInt());
-            if (emojiOnly != null && emojiOnly[0] > 1) {
+            if (emojiOnly != null && emojiOnly[0] > 1 && EmojiPackManager.DEFAULT_PACK.equals(EmojiPackManager.getActivePackId())) {
                 replaceEmojiToLottieFrame(messageText, emojiOnly);
             }
             checkEmojiOnly(emojiOnly);
@@ -3694,7 +3694,7 @@ public class MessageObject {
         int[] emojiOnly = allowsBigEmoji() ? new int[1] : null;
         messageText = Emoji.replaceEmoji(messageText, paint.getFontMetricsInt(), false, emojiOnly);
         messageText = replaceAnimatedEmoji(messageText, paint.getFontMetricsInt());
-        if (emojiOnly != null && emojiOnly[0] > 1) {
+        if (emojiOnly != null && emojiOnly[0] > 1 && EmojiPackManager.DEFAULT_PACK.equals(EmojiPackManager.getActivePackId())) {
             replaceEmojiToLottieFrame(messageText, emojiOnly);
         }
         checkEmojiOnly(emojiOnly);
@@ -3968,7 +3968,7 @@ public class MessageObject {
         int[] emojiOnly = allowsBigEmoji() ? new int[1] : null;
         messageText = Emoji.replaceEmoji(messageText, paint.getFontMetricsInt(), false, emojiOnly);
         messageText = replaceAnimatedEmoji(messageText, entities, paint.getFontMetricsInt());
-        if (emojiOnly != null && emojiOnly[0] > 1) {
+        if (emojiOnly != null && emojiOnly[0] > 1 && EmojiPackManager.DEFAULT_PACK.equals(EmojiPackManager.getActivePackId())) {
             replaceEmojiToLottieFrame(messageText, emojiOnly);
         }
         checkEmojiOnly(emojiOnly);
@@ -7072,7 +7072,7 @@ public class MessageObject {
             int[] emojiOnly = allowsBigEmoji() ? new int[1] : null;
             messageText = Emoji.replaceEmoji(messageText, paint.getFontMetricsInt(), false, emojiOnly);
             messageText = replaceAnimatedEmoji(messageText, paint.getFontMetricsInt());
-            if (emojiOnly != null && emojiOnly[0] > 1) {
+            if (emojiOnly != null && emojiOnly[0] > 1 && EmojiPackManager.DEFAULT_PACK.equals(EmojiPackManager.getActivePackId())) {
                 replaceEmojiToLottieFrame(messageText, emojiOnly);
             }
             checkEmojiOnly(emojiOnly);
