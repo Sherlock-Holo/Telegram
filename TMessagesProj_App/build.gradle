@@ -161,13 +161,13 @@ android {
 
     defaultConfig.versionCode = Integer.parseInt(APP_VERSION_CODE)
 
-    // Fork revision: commits on top of upstream "update to 13.0.3 (7183)" (0aae95980).
+    // Fork revision: commits on top of upstream "update to 13.1.1 (7237)" (3de37c8cf).
     // Matches the tag release-<APP_VERSION_NAME>-<APP_VERSION_CODE>-holo-<rev>.
     // -PHOLO_REV=<n> overrides; needs full commit history (CI: fetch-depth 0).
-    // Only versionName gets the suffix; APP_VERSION_NAME / BUILD_VERSION_STRING stay "13.0.3".
+    // Only versionName gets the suffix; APP_VERSION_NAME / BUILD_VERSION_STRING stay "13.1.1".
     def holoRev = providers.gradleProperty("HOLO_REV").orElse(
             providers.exec {
-                commandLine "git", "rev-list", "--count", "0aae95980..HEAD"
+                commandLine "git", "rev-list", "--count", "3de37c8cf..HEAD"
                 workingDir rootDir
                 ignoreExitValue = true
             }.standardOutput.asText.map { it.trim() }
