@@ -28,15 +28,11 @@ import java.util.concurrent.CancellationException;
  * No-FCM stub implementation of FirebasePhoneNumberVerificationHelper.
  * All Firebase Phone Number Verification functionality is disabled in the fork build.
  * Methods return empty results or fail gracefully when BuildVars.SUPPORTS_FPNV is false.
+ * 
+ * VerificationSupportResult stub extracted to separate VerificationSupportResult.kt
+ * per fork convention (new classes in Kotlin files).
  */
 public class FirebasePhoneNumberVerificationHelper {
-
-    // Stub class to replace com.google.firebase.pnv.VerificationSupportResult
-    public static class VerificationSupportResult {
-        public boolean isSupported() { return false; }
-        public int getSimSlot() { return -1; }
-        public String getCarrierId() { return null; }
-    }
 
     private FirebasePhoneNumberVerificationHelper() {
     }
