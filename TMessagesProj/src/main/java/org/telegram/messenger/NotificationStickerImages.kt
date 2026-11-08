@@ -25,7 +25,7 @@ import java.io.FileOutputStream
  */
 internal class NotificationStickerImages(
     private val currentAccount: Int,
-    private val notificationsQueue: DispatchQueue,
+    private val notificationsQueue: DispatchQueue2,
     /** showOrUpdateNotification(false) of the owning controller; the same instance is used for cancel / post. */
     private val rebuild: Runnable,
 ) {
