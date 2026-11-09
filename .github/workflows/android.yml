@@ -11,6 +11,7 @@ name: Android CI
 on:
   push:
     branches: [holo-fork]
+    tags: ["release-*-holo-*"]
   pull_request:
   workflow_dispatch:
 
