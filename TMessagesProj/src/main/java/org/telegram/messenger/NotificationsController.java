@@ -46,6 +46,7 @@ import android.os.Build;
 import android.os.PowerManager;
 import android.os.SystemClock;
 import android.provider.Settings;
+import android.service.notification.StatusBarNotification;
 import android.text.TextPaint;
 import android.text.TextUtils;
 import android.util.Pair;
@@ -118,7 +119,8 @@ public class NotificationsController extends BaseController implements Notificat
     private final LongSparseArray<Integer> lastWearNotifiedMessageId = new LongSparseArray<>();
     private final LongSparseArray<Integer> pushDialogsOverrideMention = new LongSparseArray<>();
     private final HashSet<String> pendingVoiceLoads = new HashSet<>();
-    private final NotificationStickerImages stickerImages = new NotificationStickerImages(currentAccount, notificationsQueue, () -> showOrUpdateNotification(false)); // Fork
+    private final NotificationStickerImages stickerImages = new NotificationStickerImages(currentAccount, notificationsQueue, this); // Fork
+    private final LongSparseArray<Notification> lastWearNotifications = new LongSparseArray<>();
     public final ArrayList<MessageObject> popupMessages = new ArrayList<>();
     public ArrayList<MessageObject> popupReplyMessages = new ArrayList<>();
     private final HashSet<Long> openedInBubbleDialogs = new HashSet<>();
@@ -438,6 +440,8 @@ public class NotificationsController extends BaseController implements Notificat
         channelGroupsCreated = false;
         notificationsQueue.postRunnable(() -> {
             notificationManager.cancel("wallet_tonconnect", currentAccount);
+            stickerImages.cancelAccount();
+            lastWearNotifications.clear();
             openedDialogId = 0;
             openedTopicId = 0;
             total_unread_count = 0;
@@ -506,6 +510,39 @@ public class NotificationsController extends BaseController implements Notificat
         notificationsQueue.postRunnable(() -> {
             openedDialogId = dialog_id;
             openedTopicId = topicId;
+            if (dialog_id != 0) {
+                stickerImages.cancelDialog(dialog_id);
+            }
+        });
+    }
+
+    ArrayList<MessageObject> getPushMessagesForStickerImages() {
+        return pushMessages;
+    }
+
+    SharedPreferences getNotificationSettingsForStickerImages() {
+        return getAccountInstance().getNotificationsSettings();
+    }
+
+    long getOpenedDialogIdForStickerImages() {
+        return openedDialogId;
+    }
+
+    void rebuildNotificationFromStickerImages(boolean notifyAboutLast, long targetDialogId) {
+        showOrUpdateNotification(notifyAboutLast, targetDialogId, new int[0]);
+    }
+
+    void rebuildNotificationFromStickerImages(boolean notifyAboutLast, long targetDialogId, int[] targetMessageIds) {
+        showOrUpdateNotification(notifyAboutLast, targetDialogId, targetMessageIds);
+    }
+
+    public void onNotificationDismissed(long dialogId, int date) {
+        notificationsQueue.postRunnable(() -> {
+            if (dialogId == 0) {
+                stickerImages.cancelAccount();
+            } else {
+                stickerImages.cancelDialog(dialogId);
+            }
         });
     }
 
@@ -631,6 +668,7 @@ public class NotificationsController extends BaseController implements Notificat
                         sparseArray.remove(mid);
                         delayedPushMessages.remove(messageObject);
                         pushMessages.remove(messageObject);
+                        stickerImages.cancelMessage(dialogId, mid);
                         if (isPersonalMessage(messageObject)) {
                             personalCount--;
                         }
@@ -641,6 +679,7 @@ public class NotificationsController extends BaseController implements Notificat
                     pushMessagesDict.remove(key);
                 }
             }
+            stickerImages.syncWithPushMessages();
             if (!popupArrayRemove.isEmpty()) {
                 AndroidUtilities.runOnUIThread(() -> {
                     for (int a = 0, size = popupArrayRemove.size(); a < size; a++) {
@@ -697,6 +736,7 @@ public class NotificationsController extends BaseController implements Notificat
                         }
                         delayedPushMessages.remove(messageObject);
                         pushMessages.remove(messageObject);
+                        stickerImages.cancelMessage(dialogId, messageObject.getId());
                         c--;
                         if (isPersonalMessage(messageObject)) {
                             personalCount--;
@@ -727,6 +767,7 @@ public class NotificationsController extends BaseController implements Notificat
                     pushDialogsOverrideMention.remove(dialogId);
                 }
             }
+            stickerImages.syncWithPushMessages();
             if (popupArrayRemove.isEmpty()) {
                 AndroidUtilities.runOnUIThread(() -> {
                     for (int a = 0, size = popupArrayRemove.size(); a < size; a++) {
@@ -975,6 +1016,7 @@ public class NotificationsController extends BaseController implements Notificat
                             }
                             pushMessages.remove(a);
                             delayedPushMessages.remove(messageObject);
+                            stickerImages.cancelMessage(messageObject.getDialogId(), messageObject.getId());
                             popupArrayRemove.add(messageObject);
                             a--;
                         }
@@ -989,6 +1031,7 @@ public class NotificationsController extends BaseController implements Notificat
                     NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.pushMessagesUpdated);
                 });
             }
+            stickerImages.syncWithPushMessages();
         });
     }
 
@@ -1534,6 +1577,7 @@ public class NotificationsController extends BaseController implements Notificat
                             popupArrayToRemove.add(messageObject);
                         }
                     }
+                    stickerImages.cancelDialog(dialogId);
                 } else if (canAddValue) {
                     if (getMessagesController().isCommunity(dialogId)) {
 
@@ -3355,6 +3399,8 @@ public class NotificationsController extends BaseController implements Notificat
     private void dismissNotification() {
         FileLog.d("NotificationsController dismissNotification");
         try {
+            stickerImages.cancelAccount();
+            lastWearNotifications.clear();
             notificationManager.cancel(notificationId);
             pushMessages.clear();
             pushMessagesDict.clear();
@@ -4174,7 +4220,74 @@ public class NotificationsController extends BaseController implements Notificat
         return channelId;
     }
 
+    /**
+     * Re-notify the last posted conversation notification with FLAG_ONLY_ALERT_ONCE cleared, without
+     * cancelling it and without changing MessagingStyle content. Used so a real new message that
+     * arrives during increment-protect can still raise the unread count. Does not cancel+notify.
+     */
+    private Notification findLastPostedNotification(int id, long dialogId) {
+        Notification last = lastWearNotifications.get(dialogId);
+        if (last != null) {
+            return last;
+        }
+        if (Build.VERSION.SDK_INT >= 23 && systemNotificationManager != null) {
+            try {
+                StatusBarNotification[] active = systemNotificationManager.getActiveNotifications();
+                if (active != null) {
+                    for (int i = 0; i < active.length; i++) {
+                        if (active[i].getId() == id) {
+                            return active[i].getNotification();
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                FileLog.e(e);
+            }
+        }
+        return null;
+    }
+
+    private void releaseOnlyAlertOnceIfNeeded(int id, long dialogId) {
+        Notification last = findLastPostedNotification(id, dialogId);
+        if (last == null || (last.flags & Notification.FLAG_ONLY_ALERT_ONCE) == 0) {
+            return;
+        }
+        Notification copy = last.clone();
+        copy.flags &= ~Notification.FLAG_ONLY_ALERT_ONCE;
+        try {
+            notificationManager.notify(id, copy);
+            lastWearNotifications.put(dialogId, copy);
+        } catch (Exception e) {
+            FileLog.e(e);
+        }
+    }
+
+    private void armOnlyAlertOnceAfterAlert(int id, long dialogId, Notification posted) {
+        if (posted == null) {
+            return;
+        }
+        Notification copy = posted.clone();
+        copy.flags |= Notification.FLAG_ONLY_ALERT_ONCE;
+        try {
+            notificationManager.notify(id, copy);
+            lastWearNotifications.put(dialogId, copy);
+            stickerImages.onProtectArmed(dialogId);
+        } catch (Exception e) {
+            FileLog.e(e);
+        }
+    }
+
     private void showOrUpdateNotification(boolean notifyAboutLast) {
+        showOrUpdateNotification(notifyAboutLast, null);
+    }
+
+    // A delayed media completion belongs to its original conversation, not pushMessages[0].
+    private void showOrUpdateNotification(boolean notifyAboutLast, Long targetDialogId) {
+        showOrUpdateNotification(notifyAboutLast, targetDialogId, null);
+    }
+
+    // A delayed media completion belongs to its original messages, not the current newest in the dialog.
+    private void showOrUpdateNotification(boolean notifyAboutLast, Long targetDialogId, int[] targetMessageIds) {
         if (!getUserConfig().isClientActivated() || pushMessages.isEmpty() && storyPushMessages.isEmpty() || !SharedConfig.showNotificationsForAllAccounts && currentAccount != UserConfig.selectedAccount) {
             dismissNotification();
             return;
@@ -4196,6 +4309,29 @@ public class NotificationsController extends BaseController implements Notificat
                 if (maxDate < n.date / 1000L) {
                     lastNotification = n;
                     maxDate = n.date / 1000L;
+                }
+            }
+            if (targetDialogId != null) {
+                lastNotification = null;
+                // Targeted rebuilds must keep the original message ids. An empty
+                // set or a deleted original must not fall back to leftover text.
+                if (targetMessageIds == null || targetMessageIds.length == 0) {
+                    return;
+                }
+                java.util.HashSet<Integer> wanted = new java.util.HashSet<>();
+                for (int mid : targetMessageIds) {
+                    wanted.add(mid);
+                }
+                for (MessageObject message : pushMessages) {
+                    if (message.getDialogId() == targetDialogId && wanted.contains(message.getId())) {
+                        lastNotification = message;
+                        break;
+                    }
+                }
+                // Do not fall back to another chat or an unrelated leftover message.
+                // Re-check opened / dismissed / ineligible even if another message is still listed.
+                if (lastNotification != null && !stickerImages.canPublishTargetedRebuild(targetDialogId, targetMessageIds)) {
+                    return;
                 }
             }
             if (lastNotification == null) {
@@ -4250,13 +4386,20 @@ public class NotificationsController extends BaseController implements Notificat
                 lastMessageObject = new MessageObject(currentAccount, msg, msg.message, name, name, false, false, false, false);
                 lastMessageObject.isStoryPush = true;
             } else {
-                lastMessageObject = pushMessages.get(0);
+                lastMessageObject = targetDialogId != null ? (MessageObject) lastNotification : pushMessages.get(0);
             }
             SharedPreferences preferences = getAccountInstance().getNotificationsSettings();
             int dismissDate = preferences.getInt("dismissDate", 0);
             if (!lastMessageObject.isStoryPush && lastMessageObject.messageOwner.date <= dismissDate) {
                 dismissNotification();
                 return;
+            }
+            notifyAboutLast = stickerImages.onBeforeShow(lastMessageObject, notifyAboutLast);
+            if (!lastMessageObject.isStoryPush && stickerImages.shouldSkipDialog(lastMessageObject.getDialogId())) {
+                if (!stickerImages.hasPostableDialogBesides(lastMessageObject.getDialogId())) {
+                    return;
+                }
+                notifyAboutLast = false;
             }
 
             long dialog_id = lastMessageObject.getDialogId();
@@ -4833,7 +4976,7 @@ public class NotificationsController extends BaseController implements Notificat
                     mBuilder.addAction(R.drawable.ic_ab_reply, LocaleController.getString(R.string.Reply), PendingIntent.getBroadcast(ApplicationLoader.applicationContext, 2, replyIntent, PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
                 }
             }
-            showExtraNotifications(mBuilder, detailText, dialog_id, topicId, chatName, vibrationPattern, ledColor, sound, configImportance, isDefault, isInApp, notifyDisabled, chatType);
+            showExtraNotifications(mBuilder, detailText, dialog_id, topicId, chatName, vibrationPattern, ledColor, sound, configImportance, isDefault, isInApp, notifyDisabled, chatType, notifyAboutLast);
             scheduleNotificationRepeat();
         } catch (Exception e) {
             FileLog.e(e);
@@ -4899,12 +5042,12 @@ public class NotificationsController extends BaseController implements Notificat
     }
 
     @SuppressLint("InlinedApi")
-    private void showExtraNotifications(NotificationCompat.Builder notificationBuilder, String summary, long lastDialogId, long lastTopicId, String chatName, long[] vibrationPattern, int ledColor, Uri sound, int importance, boolean isDefault, boolean isInApp, boolean isSilent, int chatType) {
+    private void showExtraNotifications(NotificationCompat.Builder notificationBuilder, String summary, long lastDialogId, long lastTopicId, String chatName, long[] vibrationPattern, int ledColor, Uri sound, int importance, boolean isDefault, boolean isInApp, boolean isSilent, int chatType, boolean notifyAboutLast) {
         FileLog.d("showExtraNotifications pushMessages.size()=" + pushMessages.size());
         if (Build.VERSION.SDK_INT >= 26) {
             notificationBuilder.setChannelId(validateChannelId(lastDialogId, lastTopicId, chatName, vibrationPattern, ledColor, sound, importance, isDefault, isInApp, isSilent, chatType));
         }
-        notificationBuilder.setOnlyAlertOnce(isSilent);
+        notificationBuilder.setOnlyAlertOnce(stickerImages.planFlags(lastDialogId, notifyAboutLast && !isSilent, isSilent).onlyAlertOnce);
         Notification mainNotification = notificationBuilder.build();
         if (Build.VERSION.SDK_INT <= 19) {
             notificationManager.notify(notificationId, mainNotification);
@@ -4926,6 +5069,12 @@ public class NotificationsController extends BaseController implements Notificat
             long dialog_id = messageObject.getDialogId();
             long topicId = MessageObject.getTopicId(currentAccount, messageObject.messageOwner, getMessagesController().isForum(messageObject));
             int dismissDate = preferences.getInt("dismissDate" + dialog_id, 0);
+            if (stickerImages.shouldSkipDialog(dialog_id)) {
+                continue;
+            }
+            if (openedDialogId != 0 && openedDialogId == dialog_id) {
+                continue;
+            }
             if (!messageObject.isStoryPush && messageObject.messageOwner.date <= dismissDate) {
                 FileLog.d("showExtraNotifications: dialog " + dialog_id + " is skipped, message date (" + messageObject.messageOwner.date + " <= " + dismissDate + ")");
                 continue;
@@ -4946,6 +5095,13 @@ public class NotificationsController extends BaseController implements Notificat
             oldIdsWear.put(wearNotificationsIds.keyAt(i), wearNotificationsIds.valueAt(i));
         }
         wearNotificationsIds.clear();
+        for (int i = oldIdsWear.size() - 1; i >= 0; i--) {
+            long skippedDid = oldIdsWear.keyAt(i);
+            if (stickerImages.shouldSkipDialog(skippedDid)) {
+                wearNotificationsIds.put(skippedDid, oldIdsWear.valueAt(i));
+                oldIdsWear.removeAt(i);
+            }
+        }
 
         class NotificationHolder {
             int id;
@@ -4973,7 +5129,21 @@ public class NotificationsController extends BaseController implements Notificat
                     FileLog.w("show dialog notification with id " + id + " " + dialogId +  " user=" + user + " chat=" + chat);
                 }
                 try {
-                    notificationManager.notify(id, notification.build());
+                    boolean alerting = notifyAboutLast && !isSilent && dialogId == lastDialogId;
+                    NotificationStickerMediaPolicy.FlagPlan plan = stickerImages.planFlags(dialogId, alerting, isSilent || dialogId != lastDialogId || topicId != lastTopicId);
+                    if (alerting && plan.releaseProtectFirst) {
+                        releaseOnlyAlertOnceIfNeeded(id, dialogId);
+                    }
+                    Notification posted = notification.build();
+                    notificationManager.notify(id, posted);
+                    if (alerting) {
+                        stickerImages.noteDialogAlerted(dialogId);
+                    }
+                    if (alerting && plan.armProtectAfterPost) {
+                        armOnlyAlertOnceAfterAlert(id, dialogId, posted);
+                    } else {
+                        lastWearNotifications.put(dialogId, posted);
+                    }
                 } catch (SecurityException e) {
                     FileLog.e(e);
                     resetNotificationSound(notification, dialogId, lastTopicId, chatName, vibrationPattern, ledColor, sound, importance, isDefault, isInApp, isSilent, chatType);
@@ -5677,7 +5847,7 @@ public class NotificationsController extends BaseController implements Notificat
                     .setContentIntent(contentIntent)
                     .extend(wearableExtender)
                     .setSortKey(String.valueOf(Long.MAX_VALUE - date))
-                    .setOnlyAlertOnce(isSilent || dialogId != lastDialogId || topicId != lastTopicId)
+                    .setOnlyAlertOnce(stickerImages.planFlags(dialogId, notifyAboutLast && !isSilent && dialogId == lastDialogId, isSilent || dialogId != lastDialogId || topicId != lastTopicId).onlyAlertOnce)
                     .setCategory(NotificationCompat.CATEGORY_MESSAGE);
 
             try {
@@ -5809,6 +5979,7 @@ public class NotificationsController extends BaseController implements Notificat
                 FileLog.d("cancel notification id " + id);
             }
             notificationManager.cancel(id);
+            lastWearNotifications.remove(did);
         }
 
         ArrayList<String> ids = new ArrayList<>(holders.size());
@@ -5828,6 +5999,7 @@ public class NotificationsController extends BaseController implements Notificat
                 ShortcutManagerCompat.removeDynamicShortcuts(ApplicationLoader.applicationContext, ids);
             }
         }
+        stickerImages.clearBuildOverrides();
     }
 
     private String cutLastName(String name) {
