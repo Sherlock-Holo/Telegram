@@ -205,6 +205,7 @@ internal class NotificationStickerImages(
             cancelSession(key)
         }
         policy.cancelAccount(currentAccount)
+        pruneLoadSessions()
         lastCompleteImages.clear()
         rebuildDispatch.invalidateAll()
     }
@@ -270,6 +271,7 @@ internal class NotificationStickerImages(
                 else -> {}
             }
         }
+        pruneLoadSessions()
         return targets
     }
 
@@ -433,6 +435,7 @@ internal class NotificationStickerImages(
             }
             if (retry) {
                 val decision = policy.onRetryTimeout(key, token)
+                pruneLoadSessions()
                 if (decision.type == NotificationStickerMediaPolicy.ActionType.RELEASE_PROTECT) {
                     publishTargetedRebuild(key, false, alertEpoch)
                 }
@@ -453,8 +456,14 @@ internal class NotificationStickerImages(
         timeouts.cancel(key)
     }
 
+    private fun pruneLoadSessions() {
+        val activeTokens = policy.waitingOrRetryingKeys(currentAccount).associateWith { policy.tokenOf(it) }
+        loadTracker.retainSessions(activeTokens)
+    }
+
     private fun cancelSession(key: NotificationStickerMediaPolicy.Key) {
         cancelTimeout(key)
+        loadTracker.forgetSession(key)
         policy.cancelKey(key)
         // Do not cancel FileLoader: the same document may be needed by the chat UI or another notification.
     }
@@ -612,10 +621,10 @@ internal class NotificationStickerImages(
             }
             if (staticWebp) {
                 if (documentFile == null && mayLoadDocument) {
-                    requestStickerNotificationLoad(FileLoader.getAttachFileName(document), allowRetry) { fileLoader.loadFile(document, loadParent, FileLoader.PRIORITY_HIGH, 1) }
+                    requestStickerNotificationLoad(messageObject, FileLoader.getAttachFileName(document), allowRetry) { fileLoader.loadFile(document, loadParent, FileLoader.PRIORITY_HIGH, 1) }
                 }
             } else if ((lottie || video) && mayLoadDocument) {
-                requestStickerNotificationLoad(FileLoader.getAttachFileName(document), allowRetry) { fileLoader.loadFile(document, loadParent, FileLoader.PRIORITY_HIGH, 1) }
+                requestStickerNotificationLoad(messageObject, FileLoader.getAttachFileName(document), allowRetry) { fileLoader.loadFile(document, loadParent, FileLoader.PRIORITY_HIGH, 1) }
             }
         } catch (e: Exception) {
             FileLog.e(e)
@@ -667,14 +676,18 @@ internal class NotificationStickerImages(
     }
 
     /** Starts a document load, or restarts it once during the bounded retry if the first attempt failed. Does not cancel shared FileLoader work. */
-    private fun requestStickerNotificationLoad(fileName: String?, allowRetry: Boolean, load: Runnable) {
+    private fun requestStickerNotificationLoad(messageObject: MessageObject, fileName: String?, allowRetry: Boolean, load: Runnable) {
         if (fileName == null || TextUtils.isEmpty(fileName)) {
             return
         }
-        if (!loadTracker.shouldStart(fileName, allowRetry)) {
+        val key = keyOf(messageObject)
+        if (!policy.isActive(key)) return
+        pruneLoadSessions()
+        val token = policy.tokenOf(key)
+        if (!loadTracker.shouldStart(fileName, key, token, allowRetry)) {
             return
         }
-        loadTracker.onStarted(fileName)
+        loadTracker.onStarted(fileName, key, token)
         load.run()
     }
 

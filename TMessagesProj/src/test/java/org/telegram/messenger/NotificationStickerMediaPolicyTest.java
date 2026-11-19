@@ -340,17 +340,17 @@ public final class NotificationStickerMediaPolicyTest {
 
     private static void testLoadTrackerRestartsOnlyOnRetry() {
         NotificationStickerLoadTracker tracker = new NotificationStickerLoadTracker();
-        assertEq("first load starts", true, tracker.shouldStart("doc.webp", false));
-        tracker.onStarted("doc.webp");
-        assertEq("in-flight not restarted", false, tracker.shouldStart("doc.webp", false));
-        assertEq("in-flight not restarted on retry either", false, tracker.shouldStart("doc.webp", true));
+        assertEq("first load starts", true, tracker.shouldStart("doc.webp", key(0, 1, 1), 1L, false));
+        tracker.onStarted("doc.webp", key(0, 1, 1), 1L);
+        assertEq("in-flight not restarted", false, tracker.shouldStart("doc.webp", key(0, 1, 1), 1L, false));
+        assertEq("in-flight not restarted on retry either", false, tracker.shouldStart("doc.webp", key(0, 1, 1), 1L, true));
         tracker.onFinished("doc.webp");
-        assertEq("finished first attempt does not auto-restart", false, tracker.shouldStart("doc.webp", false));
-        assertEq("retry phase may restart a failed load", true, tracker.shouldStart("doc.webp", true));
-        tracker.onStarted("doc.webp");
+        assertEq("finished first attempt does not auto-restart", false, tracker.shouldStart("doc.webp", key(0, 1, 1), 1L, false));
+        assertEq("retry phase may restart a failed load", true, tracker.shouldStart("doc.webp", key(0, 1, 1), 1L, true));
+        tracker.onStarted("doc.webp", key(0, 1, 1), 1L);
         tracker.onFinished("doc.webp");
-        assertEq("only one retry restart", false, tracker.shouldStart("doc.webp", true));
-        assertEq("another file is independent", true, tracker.shouldStart("other.tgs", false));
+        assertEq("only one retry restart", false, tracker.shouldStart("doc.webp", key(0, 1, 1), 1L, true));
+        assertEq("another file is independent", true, tracker.shouldStart("other.tgs", key(0, 1, 1), 1L, false));
     }
 
     private static Key key(int account, long dialogId, int messageId) {
